@@ -1,4 +1,4 @@
-obj-m += gpio-driver.o
+obj-m += gpio-driver.o gpio-test-driver.o
 
 kernel_dir = /lib/modules/$(shell uname -r)/build
 

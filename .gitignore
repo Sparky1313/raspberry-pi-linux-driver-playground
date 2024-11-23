@@ -1,0 +1,12 @@
+# Ignore everything
+*
+
+# Allow .h, .c, Makefile, and gitignore files
+!*.h
+!*.c
+!Makefile
+!.gitignore
+
+# Ignore other files that were allowed from
+# above but should be excluded
+*.mod.c

@@ -1,10 +1,11 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <asm/io.h>
 
 // Peripheral addresses
 #define BCM2837_PERI_BASE     (0x3F000000)
-#define GPIO_BASE             (BCM2708_PERI_BASE + 0x200000)
+#define GPIO_BASE             (BCM2837_PERI_BASE + 0x200000)
 #define GPIO_SIZE             (0xB1)               // GPIO peripheral memory area in bytes
 
 // Microcontroller way of doing it
@@ -23,7 +24,7 @@
 #define MIN_PIN_NUM               (2)   // lowest gpio pin that is usable (inclusive)
 #define MAX_PIN_NUM               (27)  // highest gpio pin that is usable (inclusive)
 #define GPFSEL_GPIO_PINS_PER_REG  (10)
-#define GPFSEL_MAX_REG_OFFSET     (MAX_PIN_NUM / GPFSEL_FIELDS_PER_REG)
+#define GPFSEL_MAX_REG_OFFSET     (MAX_PIN_NUM / GPFSEL_GPIO_PINS_PER_REG)
 #define GPFSEL_FIELD_BIT_WIDTH    (3)       // Each GPFSEL pin/field has a width of 3 bits in its register.
 #define GPFSEL_FIELD_MASK         (0x07U)   // Each GPFSEL pin/field has a width of 3 bits so 0x07U is the mask for a field.
 #define GPFSEL_INPUT              (0x00U)
@@ -65,12 +66,12 @@ static int __init gpio_test_driver_init(void)
 
 static void __exit gpio_test_driver_exit(void)
 {
-  /* if the timer was mapped (final step of successful module init) */
+  // If the gpio was successfully mapped
   if (NULL != gpio_base_addr)
   {
     // Release the GPIO mapping
     printk("Released GPIO mapping\n");
-    iounmap(gpio.addr);
+    iounmap(gpio_base_addr);
   }
   printk("GPIO driver exited\n");
   return;
