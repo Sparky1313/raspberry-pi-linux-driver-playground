@@ -112,8 +112,7 @@ bool gpio_output_ctl(uint32_t pin_num, bool do_set)
 
   uint32_t volatile * const output_pin_ctl_register = gpio_base_addr + gpio_base_offset_reg_cnt;
 
-  // TODO: Add back in once I physically start testing the pins
-  // *output_pin_ctl_register = OUTPUT_CTL_WRT_VAL;  
+  *output_pin_ctl_register = (OUTPUT_CTL_WRT_VAL << pin_num);  
   return true;
 }
 
@@ -145,12 +144,12 @@ int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
   uint32_t volatile * const pin_GPFSELx_reg = gpio_base_addr + (GPFSEL_OFFSET / sizeof(uint32_t)) + register_offset;
 
   uint32_t fsel_field_num = pin_num % GPFSEL_GPIO_PINS_PER_REG;
-  uint32_t reg_value_to_write = (*pin_GPFSELx_reg) & ((~(GPFSEL_FIELD_MASK)) << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH)); // First clear the alternative function field for that pin without affecting other pins.
+  uint32_t reg_value_to_write = (*pin_GPFSELx_reg) & (~(GPFSEL_FIELD_MASK << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH))); // First clear the alternative function field for that pin without affecting other pins.
   reg_value_to_write |= (GPFSEL_OUTPUT << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH));  // Next set that field to be an output
   
   printk("gpio_set_pin_to_output() - gpio_base_addr: %X, pin_GPFSELx_reg: %X, fsel_field_num: %d\n", gpio_base_addr, pin_GPFSELx_reg, fsel_field_num);
   printk("gpio_set_pin_to_output() - value of pin_GPFSELx_reg before write:%u, reg_value_to_write: %u\n", (*pin_GPFSELx_reg), reg_value_to_write);
-  // *pin_GPFSELx_reg = reg_value_to_write;  // Commenting out until I know that I am doing the calculations correct
+  *pin_GPFSELx_reg = reg_value_to_write;
   return 0;
 }
 
