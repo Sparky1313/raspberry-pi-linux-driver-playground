@@ -3,6 +3,8 @@
 #include <linux/module.h>
 #include <asm/io.h>
 
+#include "gpio-test-driver.h"
+
 // Peripheral addresses
 #define BCM2837_PERI_BASE     (0x3F000000)
 #define GPIO_BASE             (BCM2837_PERI_BASE + 0x200000)
@@ -74,7 +76,6 @@ static void __exit gpio_test_driver_exit(void)
     iounmap(gpio_base_addr);
   }
   printk("GPIO driver exited\n");
-  return;
 }
 
 static bool gpio_is_valid_pin(uint32_t pin_num)
@@ -95,7 +96,7 @@ static void gpio_set_pin_to_input(uint32_t pin_num, bool is_active_high)
 
 // Ret values:  false - output was not set, invalid pin_num argument
 //
-static bool gpio_output_ctl(uint32_t pin_num, bool do_set)
+bool gpio_output_ctl(uint32_t pin_num, bool do_set)
 {
   if (!gpio_is_valid_pin(pin_num))
   {
@@ -111,14 +112,16 @@ static bool gpio_output_ctl(uint32_t pin_num, bool do_set)
 
   uint32_t volatile * const output_pin_ctl_register = gpio_base_addr + gpio_base_offset_reg_cnt;
 
-  *output_pin_ctl_register = OUTPUT_CTL_WRT_VAL;
+  // TODO: Add back in once I physically start testing the pins
+  // *output_pin_ctl_register = OUTPUT_CTL_WRT_VAL;  
+  return true;
 }
 
 
 // Ret values:  0 - success
 //              1 - invalid pin_num argument
 //              2 - other internal failure
-static int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
+int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
 {
   if (!gpio_is_valid_pin(pin_num))
   {
@@ -143,9 +146,10 @@ static int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
 
   uint32_t fsel_field_num = pin_num % GPFSEL_GPIO_PINS_PER_REG;
   uint32_t reg_value_to_write = (*pin_GPFSELx_reg) & ((~(GPFSEL_FIELD_MASK)) << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH)); // First clear the alternative function field for that pin without affecting other pins.
-  reg_value_to_write &= (GPFSEL_OUTPUT << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH));  // Next set that field to be an output
+  reg_value_to_write |= (GPFSEL_OUTPUT << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH));  // Next set that field to be an output
   
-  printk("gpio_set_pin_to_output() - reg_value_to_write: %d\n, reg_value_to_write");
+  printk("gpio_set_pin_to_output() - gpio_base_addr: %X, pin_GPFSELx_reg: %X, fsel_field_num: %d\n", gpio_base_addr, pin_GPFSELx_reg, fsel_field_num);
+  printk("gpio_set_pin_to_output() - value of pin_GPFSELx_reg before write:%u, reg_value_to_write: %u\n", (*pin_GPFSELx_reg), reg_value_to_write);
   // *pin_GPFSELx_reg = reg_value_to_write;  // Commenting out until I know that I am doing the calculations correct
   return 0;
 }
@@ -153,7 +157,10 @@ static int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
 module_init(gpio_test_driver_init);
 module_exit(gpio_test_driver_exit);
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("");
+EXPORT_SYMBOL(gpio_output_ctl);
+EXPORT_SYMBOL(gpio_set_pin_to_output);
+
+MODULE_LICENSE("Proprietary");
+MODULE_AUTHOR("Trevor Foland");
 MODULE_DESCRIPTION("A practice Linux driver that controls GPIO.");
 MODULE_VERSION("1.0");
