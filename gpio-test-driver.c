@@ -4,6 +4,7 @@
 #include <asm/io.h>
 
 #include "gpio-test-driver.h"
+#include "playground-errno.h"
 
 // Peripheral addresses
 #define BCM2837_PERI_BASE     (0x3F000000)
@@ -55,7 +56,7 @@ static int __init gpio_test_driver_init(void)
   {
     // Exit immediately
     pr_err("GPIO driver couldn't map the io space!\n");
-    return 1;
+    return -EMAPPING;
   }
   else
   {
@@ -63,7 +64,7 @@ static int __init gpio_test_driver_init(void)
   }
 
   printk("GPIO driver successfully initialized\n");
-  return 0;
+  return ENONE;
 }
 
 static void __exit gpio_test_driver_exit(void)
@@ -94,14 +95,15 @@ static void gpio_set_pin_to_input(uint32_t pin_num, bool is_active_high)
 
 }
 
-// Ret values:  false - output was not set, invalid pin_num argument
+// Ret values:  ENONE     - success
+//              -EINVPIN  - failure, invalid pin_num argument
 //
-bool gpio_output_ctl(uint32_t pin_num, bool do_set)
+int gpio_output_ctl(uint32_t pin_num, bool do_set)
 {
   if (!gpio_is_valid_pin(pin_num))
   {
     pr_err("GPIO pin provided is outside valid pin range!\n");
-    return false;
+    return -EINVPIN;
   }
   
   // All registers are 32 bit and we only use the first set or clear register since the Raspberry Pi B
@@ -113,19 +115,20 @@ bool gpio_output_ctl(uint32_t pin_num, bool do_set)
   uint32_t volatile * const output_pin_ctl_register = gpio_base_addr + gpio_base_offset_reg_cnt;
 
   *output_pin_ctl_register = (OUTPUT_CTL_WRT_VAL << pin_num);  
-  return true;
+  return ENONE;
 }
 
 
-// Ret values:  0 - success
-//              1 - invalid pin_num argument
-//              2 - other internal failure
+// Ret values:  ENONE       - success
+//              -EINVPIN    - failure, invalid pin_num argument
+//              -EINVREG    - failure, invalid register access
+//              -EINTERNAL  - failure, other internal failure
 int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
 {
   if (!gpio_is_valid_pin(pin_num))
   {
     pr_err("GPIO pin provided is outside valid pin range!\n");
-    return 1;
+    return -EINVPIN;
   }
 
   uint32_t register_offset = pin_num / GPFSEL_GPIO_PINS_PER_REG;  // Each GPFSEL register contains the alternate function select for 10 pins
@@ -135,11 +138,16 @@ int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
   if (GPFSEL_MAX_REG_OFFSET < register_offset)
   {
     pr_err("Tried to access an invalid register during function select of pin!\n");
-    return 2;
+    return -EINVREG;
   }
 
   // Clear or set the pin so that when it is changed to an output, it will immediately be at the correct initial value
-  gpio_output_ctl(pin_num, is_on_initially);
+  int error = gpio_output_ctl(pin_num, is_on_initially);
+
+  if (ENONE != error)
+  {
+    return error;
+  }
 
   uint32_t volatile * const pin_GPFSELx_reg = gpio_base_addr + (GPFSEL_OFFSET / sizeof(uint32_t)) + register_offset;
 
@@ -150,7 +158,7 @@ int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
   printk("gpio_set_pin_to_output() - gpio_base_addr: %X, pin_GPFSELx_reg: %X, fsel_field_num: %d\n", gpio_base_addr, pin_GPFSELx_reg, fsel_field_num);
   printk("gpio_set_pin_to_output() - value of pin_GPFSELx_reg before write:%u, reg_value_to_write: %u\n", (*pin_GPFSELx_reg), reg_value_to_write);
   *pin_GPFSELx_reg = reg_value_to_write;
-  return 0;
+  return ENONE;
 }
 
 module_init(gpio_test_driver_init);

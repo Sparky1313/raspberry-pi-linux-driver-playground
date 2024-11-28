@@ -6,6 +6,7 @@
 #include <linux/string.h>
 
 #include "gpio-test-driver.h"
+#include "playground-errno.h"
 // #include <asm/io.h>
 
 
@@ -79,11 +80,14 @@ static led_dev_t led_dev_array[MAX_LED_DEVICES];
 static int __init led_driver_init(void)
 {
   dev_t dev_id = 0;
+  int error = ENONE;
 
-  if (0 != alloc_chrdev_region(&dev_id, 0, MAX_LED_DEVICES, LED_DEVICE_NAME))
+  error = alloc_chrdev_region(&dev_id, 0, MAX_LED_DEVICES, LED_DEVICE_NAME);
+  
+  if (ENONE != error)
   {
     pr_err("LED driver couldn't allocate device ids for all the necessary devices.");
-    return -1;
+    goto failure_end;
   }
 
   major_drv_num = MAJOR(dev_id);
@@ -93,7 +97,9 @@ static int __init led_driver_init(void)
 
   for (uint32_t led_num = 0; led_num < MAX_LED_DEVICES; led_num++)
   {
-    if (0 == led_dev_init(&(led_dev_array[led_num]), led_num))
+    error = led_dev_init(&(led_dev_array[led_num]), led_num);
+
+    if (ENONE == error)
     {
       devices_successfully_inited++;
     }
@@ -104,7 +110,7 @@ static int __init led_driver_init(void)
   }
 
   printk("LED driver successfully initialized\n");
-  return 0;
+  return ENONE;
 
 delete_cdevs:
   for (uint32_t i = 0; i < devices_successfully_inited; i++)
@@ -115,25 +121,28 @@ delete_cdevs:
 unregister_cdevs:
   unregister_leds_cdev_region();
 
-
+failure_end:
   pr_err("LED failed initialization!\n");
 
-  return -1;
+  return error;
 }
 
 static void __exit led_driver_exit(void)
 {
+  int error = ENONE;
+
   for (uint32_t led_num = 0; led_num < MAX_LED_DEVICES; led_num++)
   {
+    error = gpio_output_ctl(led_dev_array[led_num].pin_num, false);
     
-    if (!gpio_output_ctl(led_dev_array[led_num].pin_num, false))
+    if (ENONE != error)
     {
       // Just log an event.
       // There isn't much else we can do during runtime if for some reason
       // turning off the led's output failed. This should only occur
       // if the pin number was wrong, which should have been caught elsewhere
       // before getting to this point.
-      pr_err("Failed trying to turn output pin for LED off!\n"); 
+      pr_err("Failed trying to turn output pin for LED off! error: %d\n", error); 
     }
 
     cdev_del(&(led_dev_array[led_num].c_dev));
@@ -150,13 +159,17 @@ static inline void unregister_leds_cdev_region(void)
 
 static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
 {
+  int error = ENONE;
+
   led_dev->pin_num = FIRST_LED_PIN + led_dev_index;
 
   // Try to set the led pin of the device driver to an output and set it to be off initially
-  // If the attempt failed, return an error
-  if (0 != gpio_set_pin_to_output(led_dev->pin_num, false))
+  // If the attempt failed, return the error
+
+  error = gpio_set_pin_to_output(led_dev->pin_num, false);
+  if (ENONE != error)
   {
-    return 1;
+    return error;
   }
 
   led_dev->led_state = LED_OFF;
@@ -172,13 +185,14 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
   led_dev->c_dev.owner = THIS_MODULE;
   
   // Try to add the character device
-  if (0 != cdev_add(&(led_dev->c_dev), dev_id, 1))
+  error = cdev_add(&(led_dev->c_dev), dev_id, 1);
+  if (ENONE != error)
   {
     // TODO: Add some error message
-    return -1;
+    return error;
   }
 
-  return 0;
+  return ENONE;
 }
 
 static int led_open(struct inode *p_inode, struct file *p_file)
