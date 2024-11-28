@@ -20,7 +20,7 @@
 // Valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off". 
 // '\0' character is not included in these messages since we don't view this data as a string.
 // Therefore "toggle" is the longest message at 6 characters and is the largest buffer size we need.
-#define MSG_BUF_MAX_SIZE  6
+#define MSG_BUF_MAX_SIZE  7
 
 
 /***************    Type definitions    ***************/
@@ -75,6 +75,19 @@ static struct file_operations const led_fops =
 };
 
 static led_dev_t led_dev_array[MAX_LED_DEVICES];
+static char *led_write_word_cmds[] =
+{
+  "OFF",
+  "ON",
+  "TOGGLE"
+};
+
+static char *led_write_num_cmds[] =
+{
+  "0",
+  "1",
+  "2"
+};
 
 
 /***************    Functions    ***************/
@@ -195,6 +208,7 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
   // If the attempt failed, return the error
 
   error = gpio_set_pin_to_output(led_dev->pin_num, false);
+  // error = gpio_set_pin_to_output(led_dev->pin_num, true); // TODO: Remove, just for testing
   if (ENONE != error)
   {
     return error;
@@ -245,13 +259,16 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
 static int led_open(struct inode *p_inode, struct file *p_file)
 {
   pr_info("Open was successful\n");
-	return 0;
+
+  led_dev_t *led_dev = container_of(p_inode->i_cdev, led_dev_t, c_dev);
+  p_file->private_data = led_dev;
+	return ENONE;
 }
 
 static int led_release(struct inode * p_inode, struct file *p_file)
 {
   pr_info("Release was successful\n");
-	return 0;
+	return ENONE;
 }
 
 static ssize_t led_read(struct file *p_file, char *user_buffer, size_t len, loff_t *p_offset)
@@ -262,8 +279,81 @@ static ssize_t led_read(struct file *p_file, char *user_buffer, size_t len, loff
 
 static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t len, loff_t *p_offset)
 {
-  printk(KERN_ALERT "Sorry, this operation isn't supported.\n");
-	return -EINVAL;
+  // TODO: remove this printk statement. Using it to figure out whether nul char is included in len
+  //       Also checking to see if arguments sent from command line include the newline char
+  printk(KERN_ALERT "led_write() - Length to write is %d", len);
+  if (MSG_BUF_MAX_SIZE < len)
+  {
+    printk(KERN_ERR "led_write() - Length to write is too long! Max msg size: %d", MSG_BUF_MAX_SIZE);
+    return -EMSGSIZE;
+  }
+  // Nothing to write, so say it was successful
+  else if (0 >= len)
+  {
+    return ENONE;
+  }
+
+  led_dev_t *led_dev = p_file->private_data;
+
+  int error = copy_from_user(&(led_dev->msg_buffer), user_buffer, len);
+
+  if (ENONE != error)
+  {
+    printk(KERN_ERR "led_write() - Failed to get user_buffer data! error: %d", error);
+    return error;
+  }
+
+  // OFF command
+  if (   (0 == strncasecmp(led_write_word_cmds[0], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))
+      || (0 == strncasecmp(led_write_num_cmds[0], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))   
+     )
+  {
+    // TODO: Possibly make this its own function
+    error = gpio_output_ctl(led_dev->pin_num, false);
+    if (ENONE != error)
+    {
+      return error;
+    }
+
+    led_dev->led_state = LED_OFF;
+    led_dev->is_led_on = false;
+  }
+  // ON command
+  else if (   (0 == strncasecmp(led_write_word_cmds[1], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))
+           || (0 == strncasecmp(led_write_num_cmds[1], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))   
+          )
+  {
+    error = gpio_output_ctl(led_dev->pin_num, true);
+    if (ENONE != error)
+    {
+      return error;
+    }
+
+    led_dev->led_state = LED_OFF;
+    led_dev->is_led_on = false;
+  }
+  // TOGGLE command
+  else if (   (0 == strncasecmp(led_write_word_cmds[2], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))
+           || (0 == strncasecmp(led_write_num_cmds[2], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))   
+          )
+  {
+    error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));
+    if (ENONE != error)
+    {
+      return error;
+    }
+
+    led_dev->is_led_on = !(led_dev->is_led_on);
+    led_dev->led_state = led_dev->is_led_on ? LED_ON : LED_OFF;
+  }
+  // Unsupported command
+  else
+  {
+    // TODO: Add in some error response
+
+  }
+
+  return ENONE;
 }
 
 
