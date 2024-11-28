@@ -167,7 +167,7 @@ module_exit(gpio_test_driver_exit);
 EXPORT_SYMBOL(gpio_output_ctl);
 EXPORT_SYMBOL(gpio_set_pin_to_output);
 
-MODULE_LICENSE("Proprietary");
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Trevor Foland");
 MODULE_DESCRIPTION("A practice Linux driver that controls GPIO.");
 MODULE_VERSION("1.0");

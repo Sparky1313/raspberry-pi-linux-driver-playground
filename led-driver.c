@@ -7,12 +7,12 @@
 
 #include "gpio-test-driver.h"
 #include "playground-errno.h"
-// #include <asm/io.h>
 
 
 /***************    Macros    ***************/
 
 #define LED_DEVICE_NAME   "gpio_led"
+#define LED_CLASS         "gpio_led_class"
 #define FIRST_LED_PIN     22    // This is the first pin on the Raspberry Pi 3B that I have dedicated to leds
 #define MAX_LED_DEVICES   2
        
@@ -40,6 +40,7 @@ typedef struct led_dev_s
   led_state_t led_state;
   char msg_buffer[MSG_BUF_MAX_SIZE]; // valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off". '\0' character is not included in these messages since we don't view this data as a string.
   struct cdev c_dev;
+  struct device * p_device;
 } led_dev_t;
 
 
@@ -63,6 +64,7 @@ static int major_drv_num = 0;
 static int first_minor_drv_num = 0;
 static bool is_led_dev_0_open = false;
 static bool is_led_dev_1_open = false;
+static struct class *p_led_class = NULL;
 
 static struct file_operations const led_fops =
 {
@@ -86,12 +88,23 @@ static int __init led_driver_init(void)
   
   if (ENONE != error)
   {
-    pr_err("LED driver couldn't allocate device ids for all the necessary devices.");
+    pr_err("LED driver couldn't allocate device ids for all the necessary devices.\n");
     goto failure_end;
   }
 
   major_drv_num = MAJOR(dev_id);
   first_minor_drv_num = MINOR(dev_id);
+
+  // Create the device class before the cdev so that led_dev_init can create
+  // the actual device for each led when it is called.
+  p_led_class = class_create(THIS_MODULE, LED_CLASS);
+
+  if (IS_ERR(p_led_class))
+  {
+    error = PTR_ERR(p_led_class);
+    pr_err("Failed to create class for LEDs! error: %d\n", error);
+    goto unregister_led_cdev_region;
+  }
 
   int devices_successfully_inited = 0;
 
@@ -105,20 +118,31 @@ static int __init led_driver_init(void)
     }
     else
     {
-      goto delete_cdevs;
+      goto delete_led_cdevs_and_devices;
     }
   }
 
   printk("LED driver successfully initialized\n");
   return ENONE;
 
-delete_cdevs:
+delete_led_cdevs_and_devices:
   for (uint32_t i = 0; i < devices_successfully_inited; i++)
   {
+    // We should never have a null pointer for p_device
+    // if the device was successfully inited, but we
+    // will double-check just to be sure.
+    if (NULL != led_dev_array[i].p_device)
+    {
+      device_destroy(p_led_class, led_dev_array[i].c_dev.dev);
+    }
+
     cdev_del(&(led_dev_array[i].c_dev));
   }
 
-unregister_cdevs:
+delete_led_class:
+  class_destroy(p_led_class);
+
+unregister_led_cdev_region:
   unregister_leds_cdev_region();
 
 failure_end:
@@ -145,9 +169,12 @@ static void __exit led_driver_exit(void)
       pr_err("Failed trying to turn output pin for LED off! error: %d\n", error); 
     }
 
+    printk("Destroyed device with device id: %d\n", led_dev_array[led_num].c_dev.dev);
+    device_destroy(p_led_class, led_dev_array[led_num].c_dev.dev);
     cdev_del(&(led_dev_array[led_num].c_dev));
   }
-  
+
+  class_destroy(p_led_class);
   unregister_leds_cdev_region();
   printk("LED driver exited\n");
 }
@@ -161,6 +188,7 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
 {
   int error = ENONE;
 
+  led_dev->p_device = NULL;
   led_dev->pin_num = FIRST_LED_PIN + led_dev_index;
 
   // Try to set the led pin of the device driver to an output and set it to be off initially
@@ -189,6 +217,25 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
   if (ENONE != error)
   {
     // TODO: Add some error message
+    return error;
+  }
+
+  // Create the device name for the actual led device
+  char led_device_name[16];
+  snprintf(led_device_name, sizeof(led_device_name), "%s_%d", LED_DEVICE_NAME, led_dev_index);
+  printk("Creating device with name: %s\n", led_device_name);
+
+  // Try to create the actual led device
+  led_dev->p_device = device_create(p_led_class, NULL, led_dev->c_dev.dev, NULL, led_device_name);
+
+  if (IS_ERR(led_dev))
+  {
+    error = PTR_ERR(led_dev->p_device);
+    pr_err("Creating actual LED device failed! error: %d\n", error);
+
+    // Delete this device's cdev that was added
+    cdev_del(&(led_dev->c_dev));
+    
     return error;
   }
 
@@ -223,7 +270,7 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
 module_init(led_driver_init);
 module_exit(led_driver_exit);
 
-MODULE_LICENSE("Proprietary");
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Trevor Foland");
 MODULE_DESCRIPTION("A practice Linux driver that controls LEDs.");
 MODULE_VERSION("1.0");
