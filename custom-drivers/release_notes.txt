@@ -1,0 +1,4 @@
+==================================================================
+version 1.0.0:
+  - Initial custom gpio kernel module.
+  - Initial led character driver that supports write operations.

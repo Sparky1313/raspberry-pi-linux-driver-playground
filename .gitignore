@@ -1,11 +1,14 @@
 # Ignore everything
-*
+.vscode
+custom-drivers/*
 
-# Allow .h, .c, Makefile, and gitignore files
+# Allow .h, .c, Makefile, gitignore, markdown, and txt files
 !*.h
 !*.c
 !Makefile
 !.gitignore
+!*.md
+!*.txt
 
 # Ignore other files that were allowed from
 # above but should be excluded
