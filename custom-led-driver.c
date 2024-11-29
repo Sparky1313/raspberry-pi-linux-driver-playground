@@ -5,21 +5,21 @@
 #include <linux/cdev.h>
 #include <linux/string.h>
 
-#include "gpio-test-driver.h"
-#include "playground-errno.h"
+#include "custom-gpio-driver.h"
+#include "custom-errno.h"
 
 
 /***************    Macros    ***************/
 
-#define LED_DEVICE_NAME   "gpio_led"
-#define LED_CLASS         "gpio_led_class"
-#define FIRST_LED_PIN     22    // This is the first pin on the Raspberry Pi 3B that I have dedicated to leds
+#define LED_DEVICE_NAME   "custom_gpio_led"
+#define LED_CLASS         "custom_gpio_led_class"
+#define FIRST_LED_PIN     22                        // This is the first pin on the Raspberry Pi 3B that I have dedicated to leds
 #define MAX_LED_DEVICES   2
        
 
 // Valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off". 
-// '\0' character is not included in these messages since we don't view this data as a string.
-// Therefore "toggle" is the longest message at 6 characters and is the largest buffer size we need.
+// '\0' character can be included in these messages since we might view this data as a string.
+// Therefore "toggle" is the longest message at 7 characters (6 chars + '\0') and is the largest buffer size we need.
 #define MSG_BUF_MAX_SIZE  7
 
 
@@ -38,7 +38,7 @@ typedef struct led_dev_s
   uint32_t pin_num;
   bool is_led_on;
   led_state_t led_state;
-  char msg_buffer[MSG_BUF_MAX_SIZE]; // valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off". '\0' character is not included in these messages since we don't view this data as a string.
+  char msg_buffer[MSG_BUF_MAX_SIZE]; // valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off".
   struct cdev c_dev;
   struct device * p_device;
 } led_dev_t;
@@ -50,6 +50,7 @@ static int __init led_driver_init(void);
 static void __exit led_driver_exit(void);
 static inline void unregister_leds_cdev_region(void);
 static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index);
+static int led_dev_uevent(struct device *dev, struct kobj_uevent_env *env);
 
 // File operation functions
 static int led_open(struct inode *, struct file *);
@@ -118,6 +119,10 @@ static int __init led_driver_init(void)
     pr_err("Failed to create class for LEDs! error: %d\n", error);
     goto unregister_led_cdev_region;
   }
+
+  // Now assign the custom dev_uevent function that will run when a new device
+  // is created. We use this to set device permissions at creation.
+  p_led_class->dev_uevent = led_dev_uevent;
 
   int devices_successfully_inited = 0;
 
@@ -235,7 +240,7 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
   }
 
   // Create the device name for the actual led device
-  char led_device_name[16];
+  char led_device_name[24]; // There is nothing special about picking 24 bytes. It just fits the name and a large number of devices.
   snprintf(led_device_name, sizeof(led_device_name), "%s_%d", LED_DEVICE_NAME, led_dev_index);
   printk("Creating device with name: %s\n", led_device_name);
 
@@ -253,6 +258,13 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
     return error;
   }
 
+  return ENONE;
+}
+
+static int led_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+  // Look at linux/drivers/base/core.c for an example of add_uevent_var
+  add_uevent_var(env, "DEVMODE=%#o", 0666);
   return ENONE;
 }
 
@@ -277,20 +289,26 @@ static ssize_t led_read(struct file *p_file, char *user_buffer, size_t len, loff
 	return -EINVAL;
 }
 
+
+// Data written can be raw characters (i.e. char arrays without the NUL terminator) or strings (i.e. char arrays with the NUL terminator)
+// 
+// NOTE: Raw characters or strings ending with a newline char are not supported. (Future support may be added)
+//
+// NOTE: When writing using the "echo" command from the terminal, the "echo" command will append the '\n' char ("LF" char on Linux).
+//       Either type "echo -n" to eliminate the newline or don't include a space after the last argument.
+//       (e.g. echo -n "1" > your_device_path, echo -n 1 > your_device_path, echo 1> your_device_path)
 static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t len, loff_t *p_offset)
 {
-  // TODO: remove this printk statement. Using it to figure out whether nul char is included in len
-  //       Also checking to see if arguments sent from command line include the newline char
-  printk(KERN_ALERT "led_write() - Length to write is %d", len);
+  // First check that the message isn't too large
   if (MSG_BUF_MAX_SIZE < len)
   {
     printk(KERN_ERR "led_write() - Length to write is too long! Max msg size: %d", MSG_BUF_MAX_SIZE);
     return -EMSGSIZE;
   }
-  // Nothing to write, so say it was successful
+  // Nothing to write, so say nothing was written
   else if (0 >= len)
   {
-    return ENONE;
+    return 0;
   }
 
   led_dev_t *led_dev = p_file->private_data;
@@ -303,9 +321,16 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
     return error;
   }
 
+  // NOTE: We use "len" instead of "MSG_BUF_MAX_SIZE" for the max in strncasecmp calls here
+  //       because the user argument may or may not be a string which means it would have the '\0' char appended.
+  //       We can use "len" instead of "MSG_BUF_MAX_SIZE" because we already checked that the user argument is
+  //       not larger than "MSG_BUF_MAX_SIZE" upon entry into this function.
+  //
+  // NOTE: We don't support having the '\n' char appended to the message, but may support it in the future.  
+
   // OFF command
-  if (   (0 == strncasecmp(led_write_word_cmds[0], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))
-      || (0 == strncasecmp(led_write_num_cmds[0], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))   
+  if (   (0 == strncasecmp(led_write_word_cmds[0], led_dev->msg_buffer, len))
+      || (0 == strncasecmp(led_write_num_cmds[0], led_dev->msg_buffer, len))   
      )
   {
     // TODO: Possibly make this its own function
@@ -315,12 +340,12 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
       return error;
     }
 
-    led_dev->led_state = LED_OFF;
     led_dev->is_led_on = false;
+    led_dev->led_state = LED_OFF;
   }
   // ON command
-  else if (   (0 == strncasecmp(led_write_word_cmds[1], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))
-           || (0 == strncasecmp(led_write_num_cmds[1], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))   
+  else if (   (0 == strncasecmp(led_write_word_cmds[1], led_dev->msg_buffer, len))
+           || (0 == strncasecmp(led_write_num_cmds[1], led_dev->msg_buffer, len))   
           )
   {
     error = gpio_output_ctl(led_dev->pin_num, true);
@@ -329,12 +354,12 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
       return error;
     }
 
-    led_dev->led_state = LED_OFF;
-    led_dev->is_led_on = false;
+    led_dev->is_led_on = true;
+    led_dev->led_state = LED_ON;
   }
   // TOGGLE command
-  else if (   (0 == strncasecmp(led_write_word_cmds[2], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))
-           || (0 == strncasecmp(led_write_num_cmds[2], led_dev->msg_buffer, MSG_BUF_MAX_SIZE))   
+  else if (   (0 == strncasecmp(led_write_word_cmds[2], led_dev->msg_buffer, len))
+           || (0 == strncasecmp(led_write_num_cmds[2], led_dev->msg_buffer, len))   
           )
   {
     error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));
@@ -350,10 +375,18 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
   else
   {
     // TODO: Add in some error response
-
+    return -EUNSUPCMD;
   }
 
-  return ENONE;
+  // Note if you return 0 it indicates nothing was written.
+  // The standard c library will try rewriting.
+  // So if we try to write to this device from a terminal
+  // it basically creates an infinite loop of the terminal
+  // trying to write, getting a 0 back, and trying again.
+  // Essentially impossible to uninstall the driver then since it
+  // is almost always processing the write command.
+
+  return len;
 }
 
 

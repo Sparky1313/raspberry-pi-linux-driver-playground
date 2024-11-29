@@ -3,19 +3,13 @@
 #include <linux/module.h>
 #include <asm/io.h>
 
-#include "gpio-test-driver.h"
-#include "playground-errno.h"
+#include "custom-gpio-driver.h"
+#include "custom-errno.h"
 
 // Peripheral addresses
 #define BCM2837_PERI_BASE     (0x3F000000)
 #define GPIO_BASE             (BCM2837_PERI_BASE + 0x200000)
 #define GPIO_SIZE             (0xB1)               // GPIO peripheral memory area in bytes
-
-// Microcontroller way of doing it
-// #define GPFSEL_BASE           (GPIO_BASE)
-// #define GPSET_BASE            (GPIO_BASE + 0x1C)
-// #define GPCLR_BASE            (GPIO_BASE + 0x28)
-// #define GPLEV_BASE            (GPIO_BASE + 0x2C)
 
 // All offsets are defined in bytes
 #define GPFSEL_OFFSET           (0x00)
