@@ -6,3 +6,4 @@
 #define EINVREG       1002      /* Invalid register access */
 #define EMAPPING      1003      /* Issue with mapping of memory */
 #define EUNSUPCMD     1004      /* Unsupported command */
+#define ECBFULL       1005      /* Callbacks full */

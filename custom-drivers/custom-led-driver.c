@@ -91,7 +91,7 @@ static char *led_write_num_cmds[] =
 };
 
 
-/***************    Functions    ***************/
+/***************    Function Definitions    ***************/
 
 static int __init led_driver_init(void)
 {
@@ -388,6 +388,11 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
 
   return len;
 }
+
+
+// int led_blink_timer_callback(dev_t dev_id)
+// {
+// };
 
 
 module_init(led_driver_init);
