@@ -1,11 +1,20 @@
+// Initial code to create a timer module using a hardware timer on the raspberry pi.
+// The idea was to use the timer to generate an interrupt use the top half of the irq to increase a counter atomically
+// and then have the bottom half of the irq handle certain callbacks dependent on this timer.
+// An interesting thought experiment and the goal was to test it on blinking LEDs and such.
+// Decided to put it off for now since it was taking too much time away from other goals I had.
+// But it was interesting to think about how to set this up.
+// May come back to this some day.
+
+
 #include <linux/init.h>
 #include <linux/module.h>
-// #include <linux/sort.h>
+#include <linux/sort.h>
 #include <linux/bsearch.h>
 #include <asm/io.h>
 
 #include "custom-timer-driver.h"
-// #include "custom-errno.h"
+#include "custom-errno.h"
 
 
 /***************    Macros    ***************/

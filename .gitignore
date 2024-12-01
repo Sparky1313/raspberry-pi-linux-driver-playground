@@ -9,6 +9,7 @@ custom-drivers/*
 !.gitignore
 !*.md
 !*.txt
+!custom-drivers/thought-experiments
 
 # Ignore other files that were allowed from
 # above but should be excluded

@@ -4,6 +4,8 @@
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/string.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
 
 #include "custom-gpio-driver.h"
 #include "custom-errno.h"
@@ -11,10 +13,11 @@
 
 /***************    Macros    ***************/
 
-#define LED_DEVICE_NAME   "custom_gpio_led"
-#define LED_CLASS         "custom_gpio_led_class"
-#define FIRST_LED_PIN     22                        // This is the first pin on the Raspberry Pi 3B that I have dedicated to leds
-#define MAX_LED_DEVICES   2
+#define LED_DEVICE_NAME         "custom_gpio_led"
+#define LED_BLINK_THREAD_NAME   "custom_gpio_led_blink_thread"
+#define LED_CLASS               "custom_gpio_led_class"
+#define FIRST_LED_PIN           22                        // This is the first pin on the Raspberry Pi 3B that I have dedicated to leds
+#define MAX_LED_DEVICES         2
        
 
 // Valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off". 
@@ -41,16 +44,23 @@ typedef struct led_dev_s
   char msg_buffer[MSG_BUF_MAX_SIZE]; // valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off".
   struct cdev c_dev;
   struct device * p_device;
+  struct task_struct *p_blink_thread;
 } led_dev_t;
 
 
 /***************    Function declarations    ***************/
 
+// Inline functions
+static inline void unregister_leds_cdev_region(void);
+static inline led_state_t get_led_state_from_physical_state(led_dev_t *led_dev);
+static inline int clear_led_blinking(led_dev_t *led_dev);
+
+// Normal functions
 static int __init led_driver_init(void);
 static void __exit led_driver_exit(void);
-static inline void unregister_leds_cdev_region(void);
-static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index);
+static int led_dev_init(led_dev_t *led_dev, uint32_t led_dev_index);
 static int led_dev_uevent(struct device *dev, struct kobj_uevent_env *env);
+static int led_blink(void *arg);
 
 // File operation functions
 static int led_open(struct inode *, struct file *);
@@ -65,7 +75,7 @@ static int major_drv_num = 0;
 static int first_minor_drv_num = 0;
 static bool is_led_dev_0_open = false;
 static bool is_led_dev_1_open = false;
-static struct class *p_led_class = NULL;
+static struct class *p_led_class = NULL; 
 
 static struct file_operations const led_fops =
 {
@@ -80,14 +90,16 @@ static char *led_write_word_cmds[] =
 {
   "OFF",
   "ON",
-  "TOGGLE"
+  "TOGGLE",
+  "BLINK"
 };
 
 static char *led_write_num_cmds[] =
 {
   "0",
   "1",
-  "2"
+  "2",
+  "3"
 };
 
 
@@ -175,9 +187,17 @@ static void __exit led_driver_exit(void)
 
   for (uint32_t led_num = 0; led_num < MAX_LED_DEVICES; led_num++)
   {
+    // If the led device is running on another thread (i.e. the blink thread)
+    // then request that thread to stop before trying to destroy the led kernel
+    // module.
+    if (NULL != led_dev_array[led_num].p_blink_thread)
+    {
+      kthread_stop(led_dev_array[led_num].p_blink_thread);   // Stop the LED flashing thread
+    }
+
     error = gpio_output_ctl(led_dev_array[led_num].pin_num, false);
     
-    if (ENONE != error)
+    if (unlikely(ENONE != error))
     {
       // Just log an event.
       // There isn't much else we can do during runtime if for some reason
@@ -197,12 +217,41 @@ static void __exit led_driver_exit(void)
   printk("LED driver exited\n");
 }
 
+
 static inline void unregister_leds_cdev_region(void)
 {
   unregister_chrdev_region(MKDEV(major_drv_num, first_minor_drv_num), MAX_LED_DEVICES);
 }
 
-static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
+
+static inline led_state_t get_led_state_from_physical_state(led_dev_t *led_dev)
+{
+  return (led_dev->is_led_on ? LED_ON : LED_OFF);
+}
+
+
+static inline int clear_led_blinking(led_dev_t *led_dev)
+{
+  // If the led device is running the blink thread
+  // then request that thread to stop before trying to modify the led.
+  if (LED_BLINK == led_dev->led_state)
+  {
+    if (unlikely(NULL == led_dev->p_blink_thread))
+    {
+      pr_err("led_write() - LED device should never be in the blink state but not have a pointer to the blink thread!");
+      return -EINTERNAL;
+    }
+    else
+    {
+      kthread_stop(led_dev->p_blink_thread);   // Stop the LED flashing thread
+    }
+  }
+
+  return ENONE;
+}
+
+
+static int led_dev_init(led_dev_t *led_dev, uint32_t led_dev_index)
 {
   int error = ENONE;
 
@@ -213,8 +262,8 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
   // If the attempt failed, return the error
 
   error = gpio_set_pin_to_output(led_dev->pin_num, false);
-  // error = gpio_set_pin_to_output(led_dev->pin_num, true); // TODO: Remove, just for testing
-  if (ENONE != error)
+
+  if (unlikely(ENONE != error))
   {
     return error;
   }
@@ -260,6 +309,7 @@ static int led_dev_init(led_dev_t * led_dev, uint32_t led_dev_index)
 
   return ENONE;
 }
+
 
 static int led_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
@@ -333,9 +383,11 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
       || (0 == strncasecmp(led_write_num_cmds[0], led_dev->msg_buffer, len))   
      )
   {
+    clear_led_blinking(led_dev);
+
     // TODO: Possibly make this its own function
     error = gpio_output_ctl(led_dev->pin_num, false);
-    if (ENONE != error)
+    if (unlikely(ENONE != error))
     {
       return error;
     }
@@ -348,8 +400,10 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
            || (0 == strncasecmp(led_write_num_cmds[1], led_dev->msg_buffer, len))   
           )
   {
+    clear_led_blinking(led_dev);
+
     error = gpio_output_ctl(led_dev->pin_num, true);
-    if (ENONE != error)
+    if (unlikely(ENONE != error))
     {
       return error;
     }
@@ -362,14 +416,37 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
            || (0 == strncasecmp(led_write_num_cmds[2], led_dev->msg_buffer, len))   
           )
   {
+    clear_led_blinking(led_dev);
+
     error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));
-    if (ENONE != error)
+    if (unlikely(ENONE != error))
     {
       return error;
     }
 
     led_dev->is_led_on = !(led_dev->is_led_on);
-    led_dev->led_state = led_dev->is_led_on ? LED_ON : LED_OFF;
+    led_dev->led_state = get_led_state_from_physical_state(led_dev);
+  }
+  // BLINK command
+  else if (   (0 == strncasecmp(led_write_word_cmds[3], led_dev->msg_buffer, len))
+           || (0 == strncasecmp(led_write_num_cmds[3], led_dev->msg_buffer, len))   
+          )
+  {
+    clear_led_blinking(led_dev);
+
+    // Create the device name for the actual led device
+    char led_thread_name[40]; // There is nothing special about picking 40 bytes. It just fits the name and a large number of devices.
+    int led_dev_index = led_dev->pin_num - FIRST_LED_PIN;
+    snprintf(led_thread_name, sizeof(led_thread_name), "%s_%d", LED_BLINK_THREAD_NAME, led_dev_index);
+    
+    led_dev->p_blink_thread = kthread_run(led_blink, led_dev, led_thread_name);
+    if (IS_ERR(led_dev->p_blink_thread))
+    {                                     // Kthread name is LED_flash_thread
+      pr_err("led_write() - failed to create blink thread for led\n");
+      return PTR_ERR(led_dev->p_blink_thread);
+    }
+
+    led_dev->led_state = LED_BLINK;
   }
   // Unsupported command
   else
@@ -390,9 +467,57 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
 }
 
 
-// int led_blink_timer_callback(dev_t dev_id)
-// {
-// };
+static int led_blink(void *arg)
+{
+  int error = ENONE;
+
+  led_dev_t *led_dev = (led_dev_t *)arg;
+  
+  while (!kthread_should_stop())
+  {
+    set_current_state(TASK_RUNNING);
+
+    // TODO: probably just create a generic toggle function that can be used here 
+    //       and for when the user types toggle.
+
+    error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));
+    if (unlikely(ENONE != error))
+    {
+      // Set the led state to not be BLINK anymore, base it on the actual current physical
+      // led state.
+      led_dev->led_state = get_led_state_from_physical_state(led_dev);
+      
+      // Clear the thread pointer so that we know
+      // the blink thread is not running for the device.
+      led_dev->p_blink_thread = NULL;
+      return error;
+    }
+
+    led_dev->is_led_on = !(led_dev->is_led_on);
+
+    msleep_interruptible(125);    // Blink 4 times a second
+  }
+
+  set_current_state(TASK_RUNNING);
+
+  // Try to turn the led off before exiting
+  error = gpio_output_ctl(led_dev->pin_num, false);
+
+  if (ENONE == error)
+  {
+    led_dev->is_led_on = false;
+  }
+
+  // Set the led state to not be BLINK anymore, base it on the actual current physical
+  // led state.
+  led_dev->led_state = get_led_state_from_physical_state(led_dev);
+
+  // Clear the thread pointer so that we know
+  // the blink thread is not running for the device.
+  led_dev->p_blink_thread = NULL;
+
+  return error;
+};
 
 
 module_init(led_driver_init);
