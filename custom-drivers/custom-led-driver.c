@@ -7,6 +7,7 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 
+#include "custom-driver-shared-info.h"
 #include "custom-gpio-driver.h"
 #include "custom-errno.h"
 

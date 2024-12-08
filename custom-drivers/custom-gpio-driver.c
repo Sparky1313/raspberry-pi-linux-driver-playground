@@ -11,7 +11,6 @@
 /***************    Macros    ***************/
 
 // Peripheral addresses
-#define BCM2837_PERI_BASE     (0x3F000000)
 #define GPIO_BASE             (BCM2837_PERI_BASE + 0x200000)
 #define GPIO_SIZE             (0xB1)               // GPIO peripheral memory area in bytes
 
@@ -258,28 +257,28 @@ int gpio_set_pin_to_output(uint32_t pin_num, bool is_on_initially)
   return ENONE;
 }
 
-pwm_t gpio_is_pin_pwm(uint32_t pin_num)
+pwm_channel_t gpio_is_pin_pwm(uint32_t pin_num)
 {
-  pwm_t pwm_num = NOT_PWM;
+  pwm_channel_t pwm_channel = NOT_PWM;
 
   switch (pin_num)
   {
     case 12:
     case 18:
-      pwm_num = PWM_0;
+      pwm_channel = PWM_0;
       break;
 
     case 13:
     case 19:
-      pwm_num = PWM_1;
+      pwm_channel = PWM_1;
       break;
 
     default:
-      pwm_num = NOT_PWM;
+      pwm_channel = NOT_PWM;
       break;
   }
 
-  return pwm_num;
+  return pwm_channel;
 }
 
 static gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num)
@@ -295,7 +294,7 @@ static gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num)
 
     case 18:
     case 19:
-      gpio_func_type = GPIO_ALT_FUNC_1;
+      gpio_func_type = GPIO_ALT_FUNC_5;
       break;
 
     default:
