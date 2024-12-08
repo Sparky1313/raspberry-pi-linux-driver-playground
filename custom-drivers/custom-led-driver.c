@@ -11,6 +11,9 @@
 #include "custom-errno.h"
 
 
+// TODO: Look more at the Linux Kernel style guide for struct naming and _t usage
+
+
 /***************    Macros    ***************/
 
 #define LED_DEVICE_NAME         "custom_gpio_led"
@@ -28,7 +31,7 @@
 
 /***************    Type definitions    ***************/
 
-typedef enum led_state_s
+typedef enum led_state_e
 {
   LED_OFF = 0,
   LED_ON = 1,

@@ -7,3 +7,4 @@
 #define EMAPPING      1003      /* Issue with mapping of memory */
 #define EUNSUPCMD     1004      /* Unsupported command */
 #define ECBFULL       1005      /* Callbacks full */
+#define EINVFUNC      1006      /* Invalid functionality requested */
