@@ -1,13 +1,12 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
-// #include <linux/mutex.h>
+#include <linux/mutex.h>
 #include <asm/io.h>
 
 #include "custom-driver-shared-info.h"
 #include "custom-pwm-driver.h"
-// #include "custom-gpio-driver.h"
-// #include "custom-errno.h"
+#include "custom-errno.h"
 
 
 // NOTE: The PWM doesn't have the best documentation. Therefore, I had to do a lot of searching of forums to find decent documentation. Even then
@@ -85,19 +84,66 @@ typedef struct pwm_perph_s
 /***************    Function declarations    ***************/
 
 // Inline functions
-static inline bool gpio_is_valid_pin(uint32_t pin_num);
-static inline bool gpio_is_valid_pin_func(gpio_func_type_t gpio_func_type);
+static inline bool validate_cycle_freq(pwm_cycle_freq_t cycle_freq);
+static inline bool validate_pwm_channel(pwm_channel_t pwm_channel);
+static inline uint32_t calc_pwm_range_val_from_cycle_freq(pwm_cycle_freq_t cycle_freq);
+static inline uint32_t calc_pwm_data_val_from_percent(int percent, uint32_t pwm_range_val);
+static inline void pwm_reset_pwm_channels(void);
+static inline int pwm_get_channel_range_val(pwm_channel_t pwm_channel, uint32_t *range_val);
+static inline void pwm_set_channel_data_val(pwm_channel_t pwm_channel, uint32_t data_val);
 
 // Static functions
-static int __init gpio_driver_init(void);
-static void __exit gpio_driver_exit(void);
-static void gpio_set_pin_to_input(uint32_t pin_num, bool is_active_high);
-static gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num);
+static int __init pwm_driver_init(void);
+static void __exit pwm_driver_exit(void);
+static int pwm_init_pwm_channel(pwm_channel_t pwm_channel, uint32_t initial_data_value, uint32_t initial_range_value, bool is_enabled_initially);
 
 /***************    Private variables    ***************/
 
 static pwm_perph_t * pwm_perph = NULL;
 static DEFINE_MUTEX(pwm_mutex);
+
+
+/***************    Function Definitions    ***************/
+
+static int __init pwm_driver_init(void)
+{
+  // Attempt to map the PWM peripheral
+  pwm_perph = (pwm_perph_t *)(ioremap(PWM_BASE, PWM_SIZE));  // Note, a page size always has to be allocated, so even if it is under a page, it still takes up a page of memory.
+
+  // For some reason the mapping failed
+  if (NULL == pwm_perph)
+  {
+    // Exit immediately
+    pr_err("PWM driver couldn't map the io space!\n");
+    return -EMAPPING;
+  }
+  else
+  {
+    printk("PWM successfully mapped\n");
+  }
+
+  mutex_init(&pwm_mutex);
+
+  printk("PWM driver successfully initialized\n");
+  return ENONE;
+}
+
+static void __exit pwm_driver_exit(void)
+{
+  // If the gpio was successfully mapped
+  if (NULL != pwm_perph)
+  {
+    // Release the GPIO mapping
+    printk("Released PWM mapping\n");
+    iounmap(pwm_perph);
+  }
+
+  pwm_reset_pwm_channels();
+  
+  mutex_destroy(&pwm_mutex);
+
+  printk("PWM driver exited\n");
+}
 
 static int pwm_init_pwm_channel(pwm_channel_t pwm_channel, uint32_t initial_data_value, uint32_t initial_range_value, bool is_enabled_initially)
 {
@@ -146,9 +192,17 @@ exit_release_mutex:
   return error;
 }
 
+static inline void pwm_reset_pwm_channels(void)
+{
+  // Set the pwm channel channels we have modified back to their
+  // reset values listed in the peripheral data sheet.
+  pwm_init_pwm_channel(PWM_0, 0, 0x20, false);
+  pwm_init_pwm_channel(PWM_1, 0, 0x20, false);
+}
+
 static inline bool validate_cycle_freq(pwm_cycle_freq_t cycle_freq)
 {
-  switch (cycle)
+  switch (cycle_freq)
   {
     case PWM_FREQ_4_kHZ:
       return true;
@@ -162,15 +216,39 @@ static inline bool validate_cycle_freq(pwm_cycle_freq_t cycle_freq)
   return false;
 }
 
+static inline bool validate_pwm_channel(pwm_channel_t pwm_channel)
+{
+  switch (pwm_channel)
+  {
+    case PWM_0:
+    case PWM_1:
+      return true;
+      break;
+    
+    default:
+      return false;
+      break;
+  }
+
+  return false;
+}
+
 static inline uint32_t calc_pwm_range_val_from_cycle_freq(pwm_cycle_freq_t cycle_freq)
 {
-  // TODO: Validate cycle_freq
+  if (!validate_cycle_freq(cycle_freq))
+  {
+    return 0;
+  }
+
   return (PWM_CLK_RATE / cycle_freq);
 }
 
-static inline uint32_t calc_pwm_data_val_from_percent(int percent, uin32_t pwm_range_val)
+static inline uint32_t calc_pwm_data_val_from_percent(int percent, uint32_t pwm_range_val)
 {
-  // TODO: Validate cycle_freq
+  if (!validate_cycle_freq(pwm_range_val))
+  {
+    return 0;
+  }
 
   // Validate percent argument
   if (100 <= percent)
@@ -187,6 +265,27 @@ static inline uint32_t calc_pwm_data_val_from_percent(int percent, uin32_t pwm_r
   return ((pwm_range_val / 100) * percent);
 }
 
+static inline int pwm_get_channel_range_val(pwm_channel_t pwm_channel, uint32_t *range_val)
+{
+  switch (pwm_channel)
+  {
+    case PWM_0:
+      *range_val = pwm_perph->rng_1;
+      break;
+
+    case PWM_1:
+      *range_val = pwm_perph->rng_2;
+      break;
+    
+    default:
+
+      return -EINVFUNC;
+      break;
+  }
+
+  return ENONE;
+}
+
 int pwm_init_user_device(pwm_channel_t pwm_channel, int duty_cycle, pwm_cycle_freq_t cycle_freq, bool is_enabled_initially)
 {
   uint32_t range_val = calc_pwm_range_val_from_cycle_freq(cycle_freq);
@@ -199,5 +298,59 @@ int pwm_init_user_device(pwm_channel_t pwm_channel, int duty_cycle, pwm_cycle_fr
 
   uint32_t data_val = calc_pwm_data_val_from_percent(duty_cycle, range_val);
 
-  pwm_init_pwm_channel(pwm_channel, data_val, range_val, is_enabled_initially);
+  return pwm_init_pwm_channel(pwm_channel, data_val, range_val, is_enabled_initially);
 }
+
+static inline void pwm_set_channel_data_val(pwm_channel_t pwm_channel, uint32_t data_val)
+{
+  switch (pwm_channel)
+  {
+    case PWM_0:
+      pwm_perph->dat_1 = data_val;
+      break;
+    case PWM_1:
+      pwm_perph->dat_2 = data_val;
+      break;
+  }
+}
+
+int pwm_set_duty_cycle(pwm_channel_t pwm_channel, int duty_cycle)
+{
+  if (validate_pwm_channel(pwm_channel))
+  {
+    return -EINVFUNC;
+  }
+
+  int error = ENONE;
+  uint32_t range_val = 0;
+  uint32_t data_val = 0;
+
+  mutex_lock(&pwm_mutex);
+
+  error = pwm_get_channel_range_val(pwm_channel, &range_val);
+
+  if (ENONE != error)
+  {
+    goto exit_release_mutex;
+  }
+
+  data_val = calc_pwm_data_val_from_percent(duty_cycle, range_val);
+
+  pwm_set_channel_data_val(pwm_channel, data_val);
+
+exit_release_mutex:
+  mutex_unlock(&pwm_mutex);
+
+  return error;
+}
+
+module_init(pwm_driver_init);
+module_exit(pwm_driver_exit);
+
+EXPORT_SYMBOL(pwm_init_user_device);
+EXPORT_SYMBOL(pwm_set_duty_cycle);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Trevor Foland");
+MODULE_DESCRIPTION("A practice Linux driver that controls pwm (specifically for LEDs right now).");
+MODULE_VERSION("1.0");
