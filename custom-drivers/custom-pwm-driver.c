@@ -336,7 +336,7 @@ static inline void pwm_set_channel_data_val(pwm_channel_t pwm_channel, uint32_t 
 
 int pwm_set_duty_cycle(pwm_channel_t pwm_channel, int duty_cycle)
 {
-  if (validate_pwm_channel(pwm_channel))
+  if (!validate_pwm_channel(pwm_channel))
   {
     return -EINVFUNC;
   }

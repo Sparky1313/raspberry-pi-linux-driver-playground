@@ -107,7 +107,8 @@ static char *led_write_word_cmds[] =
   "OFF",
   "ON",
   "TOGGLE",
-  "BLINK"
+  "BLINK",
+  "BR "    // Brightness
 };
 
 static char *led_write_num_cmds[] =
@@ -115,7 +116,8 @@ static char *led_write_num_cmds[] =
   "0",
   "1",
   "2",
-  "3"
+  "3",
+  "4 "
 };
 
 
@@ -486,6 +488,73 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
 
     led_dev->led_state = LED_BLINK;
   }
+  // BR (brightness command)
+  else if (   (0 == strncasecmp(led_write_word_cmds[4], led_dev->msg_buffer, 3))
+           || (0 == strncasecmp(led_write_num_cmds[4], led_dev->msg_buffer, 2))   
+          )
+  {
+    // This led is not pwm and therefore doesn't support changing brightness.
+    if (NOT_PWM == led_dev->pwm_channel)
+    {
+      return -EUNSUPCMD;
+    }
+
+    // We add one to the buffer size since we will manually add a nul terminator character 
+    // since we don't know if the user buffer had one or not
+    char duty_cycle_buffer[MSG_BUF_MAX_SIZE + 1];
+    
+    // The write BR word command should start the duty cycle str arg at index 3
+    uint32_t duty_cycle_str_start_index = 3;
+    uint32_t duty_cycle_str_len = len;
+
+    // If the user used the number command, set the index to be 2
+    if (led_write_num_cmds[4][0] == led_dev->msg_buffer[0])
+    {
+      duty_cycle_str_start_index = 2;
+    }
+    // Else the user used the word command, so instead set the index to be 3
+    else
+    {
+      duty_cycle_str_start_index = 3;
+    }
+
+    duty_cycle_str_len = len - duty_cycle_str_start_index;
+
+    // Copy the duty cycle portion of the msg_buffer over to the duty_cycle_buffer
+    memcpy(&(duty_cycle_buffer[0]), &(led_dev->msg_buffer[duty_cycle_str_start_index]), duty_cycle_str_len);
+
+    // We don't know if the user buffer had a nul terminator,
+    // so add a '\0' to the end of the buffer to ensure that it is viewed as a string
+    duty_cycle_buffer[duty_cycle_str_len] = '\0';
+
+    long long duty_cycle = 0;
+
+    error = kstrtoll(duty_cycle_buffer, 0, &duty_cycle);
+
+    if (ENONE != error)
+    {
+      return error;
+    }
+
+    if (0 > duty_cycle)
+    {
+      pr_err("User written duty cycle cannot be negative. User wrote: %lld!\n", duty_cycle);
+      return -EDOM;
+    }
+    else if (100 < duty_cycle)
+    {
+      pr_err("User written duty cycle can not be above 100. User wrote: %lld!\n", duty_cycle);
+      return -EDOM;
+    }
+
+    error = pwm_set_duty_cycle(led_dev->pwm_channel, (int)(duty_cycle));
+
+    if (unlikely(ENONE != error))
+    {
+      return error;
+    }
+
+  }
   // Unsupported command
   else
   {
@@ -575,26 +644,6 @@ static inline int led_pwm_enable(uint32_t pin_num, bool do_enable)
   
   return pwm_enable(channel, do_enable);
 }
-
-// static inline pwm_channel_t led_get_pwm_channel(uint32_t pin_num)
-// {
-//   pwm_channel_t channel = NOT_PWM;
-
-//   switch (pin_num)
-//   {
-//     case 18:
-//       channel = PWM_0;
-//       break;
-//     case 19:
-//       channel = PWM_1;
-//       break;
-//     default:
-//       channel = NOT_PWM;
-//       break;
-//   }
-
-//   return channel;
-// }
 
 
 module_init(led_driver_init);
