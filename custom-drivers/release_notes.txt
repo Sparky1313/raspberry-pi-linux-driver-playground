@@ -1,4 +1,9 @@
 ==================================================================
+version 2.0.0:
+  - Added custom pwm kernel module.
+  - Added pwm control of leds to led character driver.
+
+==================================================================
 version 1.0.1:
   - Added a simple blink functionality to led driver.
 
