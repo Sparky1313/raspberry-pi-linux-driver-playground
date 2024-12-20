@@ -36,6 +36,16 @@
 #define GPFSEL_ALT_FUNC_4         (0x03U)
 #define GPFSEL_ALT_FUNC_5         (0x02U)
 
+#define GPIO_INPUT_FUNC           (GPFSEL_INPUT)
+#define GPIO_OUTPUT_FUNC          (GPFSEL_OUTPUT)
+#define GPIO_ALT_FUNC_0           (GPFSEL_ALT_FUNC_0)
+#define GPIO_ALT_FUNC_1           (GPFSEL_ALT_FUNC_1)
+#define GPIO_ALT_FUNC_2           (GPFSEL_ALT_FUNC_2)
+#define GPIO_ALT_FUNC_3           (GPFSEL_ALT_FUNC_3)
+#define GPIO_ALT_FUNC_4           (GPFSEL_ALT_FUNC_4)
+#define GPIO_ALT_FUNC_5           (GPFSEL_ALT_FUNC_5)
+#define GPIO_INVALID_FUNC         (0xFFU) // Picked max byte value
+
 // Output Control register defines
 #define OUTPUT_CTL_WRT_VAL    (0x01U)                 // Output control requires writing a 1 to the appropriate GPCLR or GPSET register
 #define GPSET_SET_OUTPUT      (OUTPUT_CTL_WRT_VAL)    // Setting an output requires a 1 to be written (to the appropriate GPSET register)
@@ -44,18 +54,7 @@
 /***************    Type definitions    ***************/
 
 // The enum value is also the FSEL value for that function type.
-typedef enum gpio_func_type_e
-{
-  GPIO_INPUT_FUNC   = GPFSEL_INPUT,
-  GPIO_OUTPUT_FUNC  = GPFSEL_OUTPUT,
-  GPIO_ALT_FUNC_0   = GPFSEL_ALT_FUNC_0,
-  GPIO_ALT_FUNC_1   = GPFSEL_ALT_FUNC_1,
-  GPIO_ALT_FUNC_2   = GPFSEL_ALT_FUNC_2,
-  GPIO_ALT_FUNC_3   = GPFSEL_ALT_FUNC_3,
-  GPIO_ALT_FUNC_4   = GPFSEL_ALT_FUNC_4,
-  GPIO_ALT_FUNC_5   = GPFSEL_ALT_FUNC_5,
-  GPIO_INVALID_FUNC = 0xFFU // Picked max byte value
-} gpio_func_type_t;
+typedef uint32_t gpio_func_type_t;
 
 
 /***************    Function declarations    ***************/
@@ -310,7 +309,7 @@ static gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num)
 //              -EINVREG    - failure, invalid register access
 //              -EINVFUNC   - failure, invalid gpio_func_type
 //              -EINTERNAL  - failure, other internal failure
-int gpio_set_pin_to_pwm(uint32_t pin_num, uint32_t initial_val)
+int gpio_set_pin_to_pwm(uint32_t pin_num)
 {
   if (NOT_PWM == gpio_is_pin_pwm(pin_num))
   {

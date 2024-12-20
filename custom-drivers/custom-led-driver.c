@@ -8,8 +8,10 @@
 #include <linux/delay.h>
 
 #include "custom-driver-shared-info.h"
-#include "custom-gpio-driver.h"
 #include "custom-errno.h"
+#include "custom-gpio-driver.h"
+#include "custom-pwm-driver.h"
+
 
 
 // TODO: Look more at the Linux Kernel style guide for struct naming and _t usage
@@ -20,8 +22,8 @@
 #define LED_DEVICE_NAME         "custom_gpio_led"
 #define LED_BLINK_THREAD_NAME   "custom_gpio_led_blink_thread"
 #define LED_CLASS               "custom_gpio_led_class"
-#define FIRST_LED_PIN           22                        // This is the first pin on the Raspberry Pi 3B that I have dedicated to leds
-#define MAX_LED_DEVICES         2
+#define FIRST_LED_PIN           16                        // This is the first pin on the Raspberry Pi 3B that I have dedicated to leds
+#define MAX_LED_DEVICES         4
        
 
 // Valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off". 
@@ -39,16 +41,24 @@ typedef enum led_state_e
   LED_BLINK = 2
 } led_state_t;
 
+typedef struct led_dev_funcs_s
+{
+  int (*led_enable)(uint32_t pin_num, bool do_enable);
+} led_dev_funcs_t;
+
+// TODO: Add a read lock, a write lock, and a state control lock
 typedef struct led_dev_s
 {
   // TODO: Add in a mutex or semaphore for access protection
   uint32_t pin_num;
-  bool is_led_on;
+  pwm_channel_t pwm_channel;
   led_state_t led_state;
-  char msg_buffer[MSG_BUF_MAX_SIZE]; // valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off".
   struct cdev c_dev;
   struct device * p_device;
   struct task_struct *p_blink_thread;
+  led_dev_funcs_t led_dev_funcs;
+  char msg_buffer[MSG_BUF_MAX_SIZE]; // valid write messages are "on", "off", "toggle" and valid read messages are "on" and "off".
+  bool is_led_on;
 } led_dev_t;
 
 
@@ -58,6 +68,8 @@ typedef struct led_dev_s
 static inline void unregister_leds_cdev_region(void);
 static inline led_state_t get_led_state_from_physical_state(led_dev_t *led_dev);
 static inline int clear_led_blinking(led_dev_t *led_dev);
+static inline int led_gpio_enable(uint32_t pin_num, bool do_enable);
+static inline int led_pwm_enable(uint32_t pin_num, bool do_enable);
 
 // Normal functions
 static int __init led_driver_init(void);
@@ -199,7 +211,8 @@ static void __exit led_driver_exit(void)
       kthread_stop(led_dev_array[led_num].p_blink_thread);   // Stop the LED flashing thread
     }
 
-    error = gpio_output_ctl(led_dev_array[led_num].pin_num, false);
+    // error = gpio_output_ctl(led_dev_array[led_num].pin_num, false);
+    error = led_dev_array[led_num].led_dev_funcs.led_enable(led_dev_array[led_num].pin_num, false);
     
     if (unlikely(ENONE != error))
     {
@@ -262,10 +275,21 @@ static int led_dev_init(led_dev_t *led_dev, uint32_t led_dev_index)
   led_dev->p_device = NULL;
   led_dev->pin_num = FIRST_LED_PIN + led_dev_index;
 
-  // Try to set the led pin of the device driver to an output and set it to be off initially
+  // Try to set the led pin of the device driver to an output or pwm based on pin number and set it to be off initially
   // If the attempt failed, return the error
 
-  error = gpio_set_pin_to_output(led_dev->pin_num, false);
+  led_dev->pwm_channel = gpio_is_pin_pwm(led_dev->pin_num);
+
+  if (NOT_PWM == led_dev->pwm_channel)
+  {
+    error = gpio_set_pin_to_output(led_dev->pin_num, false);
+    led_dev->led_dev_funcs.led_enable = led_gpio_enable;
+  }
+  else
+  {
+    error = pwm_init_user_device(led_dev->pwm_channel, 100, PWM_FREQ_4_kHZ, false);
+    led_dev->led_dev_funcs.led_enable = led_pwm_enable;
+  }
 
   if (unlikely(ENONE != error))
   {
@@ -390,7 +414,8 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
     clear_led_blinking(led_dev);
 
     // TODO: Possibly make this its own function
-    error = gpio_output_ctl(led_dev->pin_num, false);
+    // error = gpio_output_ctl(led_dev->pin_num, false);
+    error = led_dev->led_dev_funcs.led_enable(led_dev->pin_num, false);
     if (unlikely(ENONE != error))
     {
       return error;
@@ -406,7 +431,8 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
   {
     clear_led_blinking(led_dev);
 
-    error = gpio_output_ctl(led_dev->pin_num, true);
+    // error = gpio_output_ctl(led_dev->pin_num, true);
+    error = led_dev->led_dev_funcs.led_enable(led_dev->pin_num, true);
     if (unlikely(ENONE != error))
     {
       return error;
@@ -422,7 +448,8 @@ static ssize_t led_write(struct file *p_file, const char *user_buffer, size_t le
   {
     clear_led_blinking(led_dev);
 
-    error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));
+    // error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));s
+    error = led_dev->led_dev_funcs.led_enable(led_dev->pin_num, !(led_dev->is_led_on));
     if (unlikely(ENONE != error))
     {
       return error;
@@ -484,7 +511,8 @@ static int led_blink(void *arg)
     // TODO: probably just create a generic toggle function that can be used here 
     //       and for when the user types toggle.
 
-    error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));
+    // error = gpio_output_ctl(led_dev->pin_num, !(led_dev->is_led_on));
+    error = led_dev->led_dev_funcs.led_enable(led_dev->pin_num, !(led_dev->is_led_on));
     if (unlikely(ENONE != error))
     {
       // Set the led state to not be BLINK anymore, base it on the actual current physical
@@ -505,7 +533,8 @@ static int led_blink(void *arg)
   set_current_state(TASK_RUNNING);
 
   // Try to turn the led off before exiting
-  error = gpio_output_ctl(led_dev->pin_num, false);
+  // error = gpio_output_ctl(led_dev->pin_num, false);
+  error = led_dev->led_dev_funcs.led_enable(led_dev->pin_num, false);
 
   if (ENONE == error)
   {
@@ -522,6 +551,43 @@ static int led_blink(void *arg)
 
   return error;
 };
+
+static inline int led_gpio_enable(uint32_t pin_num, bool do_enable)
+{
+  return gpio_output_ctl(pin_num, do_enable);
+}
+
+static inline int led_pwm_enable(uint32_t pin_num, bool do_enable)
+{
+  pwm_channel_t channel = gpio_is_pin_pwm(pin_num);
+
+  if (NOT_PWM == channel)
+  {
+    return -EINVPIN;
+  }
+  
+  return pwm_enable(channel, do_enable);
+}
+
+// static inline pwm_channel_t led_get_pwm_channel(uint32_t pin_num)
+// {
+//   pwm_channel_t channel = NOT_PWM;
+
+//   switch (pin_num)
+//   {
+//     case 18:
+//       channel = PWM_0;
+//       break;
+//     case 19:
+//       channel = PWM_1;
+//       break;
+//     default:
+//       channel = NOT_PWM;
+//       break;
+//   }
+
+//   return channel;
+// }
 
 
 module_init(led_driver_init);

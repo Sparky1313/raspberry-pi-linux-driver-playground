@@ -39,32 +39,35 @@
 #define PWM_BASE              (BCM2837_PERI_BASE + 0x20C000)
 #define PWM_SIZE              (0x28)               // PWM peripheral memory area in bytes
 
-#define PWM_CLK_RATE          (19200000)  // It is 19.2 MHz by default        
+#define PWM_CLK_RATE          (19200000)  // It is 19.2 MHz by default
+
+// PWM CTL Fields
+// These fields are to be used with the pwm_ctl_field_t as a sort of enum. We don't use
+// an actual enum because C doesn't support specifying enum integer type like C++ does.
+// Datasheet calls the channels 0 and 1 but puts 1 and 2 as the register names.
+// I stuck with 1 and 2 since it makes the doc easier to search.
+#define PWEN_1_FIELD          (1U)
+#define MODE_1_FIELD          (1U << 1)
+#define RPTL_1_FIELD          (1U << 2)
+#define SBIT_1_FIELD          (1U << 3)
+#define POLA_1_FIELD          (1U << 4)
+#define USEF_1_FIELD          (1U << 5)
+#define CLRF_1_FIELD          (1U << 6)
+#define MSEN_1_FIELD          (1U << 7)
+#define PWEN_2_FIELD          (1U << 8)
+#define MODE_2_FIELD          (1U << 9)
+#define RPTL_2_FIELD          (1U << 10)
+#define SBIT_2_FIELD          (1U << 11)
+#define POLA_2_FIELD          (1U << 12)
+#define USEF_2_FIELD          (1U << 13)
+#define RESERVED_FIELD        (1U << 14)
+#define MSEN_2_FIELD          (1U << 15)
 
 
 /***************    Type definitions    ***************/
 
-// Datasheet calls the channels 0 and 1 but puts 1 and 2 as the register names.
-// I stuck with 1 and 2 since it makes the doc easier to search.
-typedef enum pwm_ctl_field_e
-{
-  PWEN_1_FIELD    = (1),
-  MODE_1_FIELD    = (1 << 1),
-  RPTL_1_FIELD    = (1 << 2),
-  SBIT_1_FIELD    = (1 << 3),
-  POLA_1_FIELD    = (1 << 4),
-  USEF_1_FIELD    = (1 << 5),
-  CLRF_1_FIELD    = (1 << 6),
-  MSEN_1_FIELD    = (1 << 7),
-  PWEN_2_FIELD    = (1 << 8),
-  MODE_2_FIELD    = (1 << 9),
-  RPTL_2_FIELD    = (1 << 10),
-  SBIT_2_FIELD    = (1 << 11),
-  POLA_2_FIELD    = (1 << 12),
-  USEF_2_FIELD    = (1 << 13),
-  RESERVED_FIELD  = (1 << 14),
-  MSEN_2_FIELD    = (1 << 15)
-} pwm_ctl_field_t;
+
+typedef uint32_t pwm_ctl_field_t;
 
 // Datasheet calls the channels 0 and 1 but puts 1 and 2 as the register names.
 // I stuck with 1 and 2 since it makes the doc easier to search.
@@ -278,7 +281,6 @@ static inline int pwm_get_channel_range_val(pwm_channel_t pwm_channel, uint32_t 
       break;
     
     default:
-
       return -EINVFUNC;
       break;
   }
@@ -344,11 +346,49 @@ exit_release_mutex:
   return error;
 }
 
+int pwm_enable(pwm_channel_t pwm_channel, bool do_enable)
+{
+  int error = ENONE;
+  pwm_ctl_field_t ctl_field;
+
+  switch (pwm_channel)
+  {
+    case PWM_0:
+      ctl_field = PWEN_1_FIELD;
+      break;
+    
+    case PWM_1:
+      ctl_field = PWEN_2_FIELD;
+      break;
+
+    default:
+      return -EINVFUNC;
+      break;
+  }
+
+  mutex_lock(&pwm_mutex);
+
+  if (do_enable)
+  {
+    pwm_perph->ctl |= ctl_field;
+  }
+  else
+  {
+    pwm_perph->ctl &= ~(ctl_field);
+  }
+
+exit_release_mutex:
+  mutex_unlock(&pwm_mutex);
+  
+  return ENONE;
+}
+
 module_init(pwm_driver_init);
 module_exit(pwm_driver_exit);
 
 EXPORT_SYMBOL(pwm_init_user_device);
 EXPORT_SYMBOL(pwm_set_duty_cycle);
+EXPORT_SYMBOL(pwm_enable);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Trevor Foland");
