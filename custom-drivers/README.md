@@ -87,6 +87,16 @@ To write a kernel device from the terminal you can use the command `echo -n "<me
 
 - No devices available to interact with directly.
 
+## PWM Module
+
+### Code 
+
+- Code located here: [custom-pwm-driver](custom-pwm-driver.c)
+
+### Devices
+
+- No devices available to interact with directly.
+
 ## LED Module
 
 ### Code
@@ -100,6 +110,10 @@ To write a kernel device from the terminal you can use the command `echo -n "<me
 - custom_gpio_led_0
 
 - custom_gpio_led_1
+
+- custom_gpio_led_2
+
+- custom_gpio_led_3
 
 #### Device Interactions
 
@@ -133,14 +147,36 @@ To write a kernel device from the terminal you can use the command `echo -n "<me
         
         1. Write a 2
         
-            - From the terminal enter command `echo -n 2 > /dev <device>`
+            - From the terminal enter command `echo -n 2 > /dev/<device>`
         
         2. Write *toggle* (case-insensitive)
 
             - From the terminal enter command `echo -n "toggle" > /dev/<device>`
+    
+    4. Blink LED.
+        
+        1. Write a 3
+        
+            - From the terminal enter command `echo -n 3 > /dev/<device>`
+        
+        2. Write *blink* (case-insensitive)
+
+            - From the terminal enter command `echo -n "blink" > /dev/<device>`
+    
+    5. Change LED brightness (if LED has capability).
+        
+        1. Write a 4 with a space and value between 0 and 100 (inclusive) for brightness value (percentage)
+        
+            - From the terminal enter command `echo -n 4 <value> > /dev/<device>`
+        
+        2. Write *br* (case-insensitive) with a space and value between 0 and 100 (inclusive) for brightness value (percentage)
+
+            - From the terminal enter command `echo -n "br <value>" > /dev/<device>`
   
 ## Module Installation Order
 
 1. `custom-gpio-driver.ko`
 
-2. `custom-led-driver.ko`
+2. `custom-pwm-driver.ko`
+
+3. `custom-led-driver.ko`
