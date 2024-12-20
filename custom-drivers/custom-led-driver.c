@@ -288,7 +288,14 @@ static int led_dev_init(led_dev_t *led_dev, uint32_t led_dev_index)
   else
   {
     error = pwm_init_user_device(led_dev->pwm_channel, 100, PWM_FREQ_4_kHZ, false);
+    
+    if (unlikely(ENONE != error))
+    {
+      return error;
+    }
+
     led_dev->led_dev_funcs.led_enable = led_pwm_enable;
+    error = gpio_set_pin_to_pwm(led_dev->pin_num);
   }
 
   if (unlikely(ENONE != error))

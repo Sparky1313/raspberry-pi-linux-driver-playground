@@ -182,8 +182,8 @@ static int gpio_set_pin_function(uint32_t pin_num, gpio_func_type_t gpio_func_ty
   uint32_t reg_value_to_write = (*pin_GPFSELx_reg) & (~(GPFSEL_FIELD_MASK << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH))); // First clear the alternative function field for that pin without affecting other pins.
   reg_value_to_write |= (gpio_func_type << (fsel_field_num * GPFSEL_FIELD_BIT_WIDTH));  // Next set that field to be an output
   
-  printk("gpio_set_pin_to_output() - gpio_base_addr: %X, pin_GPFSELx_reg: %X, fsel_field_num: %d\n", gpio_base_addr, pin_GPFSELx_reg, fsel_field_num);
-  printk("gpio_set_pin_to_output() - value of pin_GPFSELx_reg before write:%u, reg_value_to_write: %u\n", (*pin_GPFSELx_reg), reg_value_to_write);
+  printk("gpio_set_pin_function() - gpio_base_addr: %X, pin_GPFSELx_reg: %X, fsel_field_num: %d\n", gpio_base_addr, pin_GPFSELx_reg, fsel_field_num);
+  printk("gpio_set_pin_function() - value of pin_GPFSELx_reg before write:%u, reg_value_to_write: %u\n", (*pin_GPFSELx_reg), reg_value_to_write);
   *pin_GPFSELx_reg = reg_value_to_write;
   
   mutex_unlock(&gpio_func_mutex);
@@ -316,12 +316,14 @@ int gpio_set_pin_to_pwm(uint32_t pin_num)
     return -EINVPIN;
   }
 
-  if (GPIO_INVALID_FUNC == gpio_determine_pwm_alt_func(pin_num))
+  gpio_func_type_t func_type = gpio_determine_pwm_alt_func(pin_num);
+
+  if (GPIO_INVALID_FUNC == func_type)
   {
     return -EINVFUNC;
   }
 
-  int error = gpio_set_pin_function(pin_num, GPIO_OUTPUT_FUNC);
+  int error = gpio_set_pin_function(pin_num, func_type);
 
   if (ENONE != error)
   {

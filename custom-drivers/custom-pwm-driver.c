@@ -76,9 +76,11 @@ typedef struct pwm_perph_s
   uint32_t volatile ctl;
   uint32_t volatile sta;
   uint32_t volatile dmac;
+  uint32_t volatile reserved_0;
   uint32_t volatile rng_1;
   uint32_t volatile dat_1;
   uint32_t volatile fif_1;
+  uint32_t volatile reserved_1;
   uint32_t volatile rng_2;
   uint32_t volatile dat_2;
 } pwm_perph_t;
@@ -136,12 +138,13 @@ static void __exit pwm_driver_exit(void)
   // If the gpio was successfully mapped
   if (NULL != pwm_perph)
   {
+    // Reset the pwm channels to inital values before unmapping
+    pwm_reset_pwm_channels();
+
     // Release the GPIO mapping
     printk("Released PWM mapping\n");
     iounmap(pwm_perph);
   }
-
-  pwm_reset_pwm_channels();
   
   mutex_destroy(&pwm_mutex);
 
@@ -154,14 +157,19 @@ static int pwm_init_pwm_channel(pwm_channel_t pwm_channel, uint32_t initial_data
 
   mutex_lock(&pwm_mutex);
 
+  printk("Trying to initialize PWM channel %d with initial_data_value: %d, initial_range_value: %d, is_enabled_initially: %d\n", 
+          pwm_channel, initial_data_value, initial_range_value, is_enabled_initially
+        );
+
   switch (pwm_channel)
   {
     case PWM_0:
       // Clear the lower 8 bits of the register since these are all
       // for PWM_0
       pwm_perph->ctl &= 0xFFFFFF00;
-      pwm_perph->dat_1 = initial_data_value;
       pwm_perph->rng_1 = initial_range_value;
+      pwm_perph->dat_1 = initial_data_value;
+      
 
       if (is_enabled_initially)
       {
@@ -174,8 +182,9 @@ static int pwm_init_pwm_channel(pwm_channel_t pwm_channel, uint32_t initial_data
       // Clear the second lowest 8 bits of the register since these are all
       // for PWM_1
       pwm_perph->ctl &= 0xFFFF00FF;
-      pwm_perph->dat_2 = initial_data_value;
       pwm_perph->rng_2 = initial_range_value;
+      pwm_perph->dat_2 = initial_data_value;
+      
 
       if (is_enabled_initially)
       {
@@ -185,10 +194,14 @@ static int pwm_init_pwm_channel(pwm_channel_t pwm_channel, uint32_t initial_data
       break;
 
     default:
+      // Exit immediately
+      pr_err("PWM channel %d doesn't exist!\n", pwm_channel);
       error = -EINVFUNC;
       goto exit_release_mutex;
       break;
   }
+
+  printk("PWM ctl reg val: %d, data1 val: %d, range1 val: %d, data2 val: %d, range2 val: %d\n", pwm_perph->ctl, pwm_perph->dat_1, pwm_perph->rng_1, pwm_perph->dat_2, pwm_perph->rng_2);
 
 exit_release_mutex:
   mutex_unlock(&pwm_mutex);
@@ -212,6 +225,7 @@ static inline bool validate_cycle_freq(pwm_cycle_freq_t cycle_freq)
       break;
 
     default:
+      pr_err("PWM channel invalid cycle frequency of %d!\n", cycle_freq);
       return false;
       break;
   }
@@ -229,6 +243,7 @@ static inline bool validate_pwm_channel(pwm_channel_t pwm_channel)
       break;
     
     default:
+      pr_err("PWM channel %d is an invalid channel!\n", pwm_channel);
       return false;
       break;
   }
@@ -248,8 +263,9 @@ static inline uint32_t calc_pwm_range_val_from_cycle_freq(pwm_cycle_freq_t cycle
 
 static inline uint32_t calc_pwm_data_val_from_percent(int percent, uint32_t pwm_range_val)
 {
-  if (!validate_cycle_freq(pwm_range_val))
+  if (0 == pwm_range_val)
   {
+    pr_err("PWM range val is 0, which is invalid!\n");
     return 0;
   }
 
@@ -281,6 +297,7 @@ static inline int pwm_get_channel_range_val(pwm_channel_t pwm_channel, uint32_t 
       break;
     
     default:
+      pr_err("PWM channel %d is an invalid channel!\n", pwm_channel);
       return -EINVFUNC;
       break;
   }
@@ -295,6 +312,7 @@ int pwm_init_user_device(pwm_channel_t pwm_channel, int duty_cycle, pwm_cycle_fr
   // Unsupported cycle_freq provided
   if (0 == range_val)
   {
+    pr_err("PWM channel %d has an invalid cycle frequency of %d!\n", pwm_channel, cycle_freq);
     return -EINVFUNC;
   }
 
@@ -362,6 +380,7 @@ int pwm_enable(pwm_channel_t pwm_channel, bool do_enable)
       break;
 
     default:
+      pr_err("PWM channel %d is an invalid channel!\n", pwm_channel);
       return -EINVFUNC;
       break;
   }
@@ -376,6 +395,8 @@ int pwm_enable(pwm_channel_t pwm_channel, bool do_enable)
   {
     pwm_perph->ctl &= ~(ctl_field);
   }
+
+  printk("PWM ctl reg val: %d, data1 val: %d, range1 val: %d, data2 val: %d, range2 val: %d\n", pwm_perph->ctl, pwm_perph->dat_1, pwm_perph->rng_1, pwm_perph->dat_2, pwm_perph->rng_2);
 
 exit_release_mutex:
   mutex_unlock(&pwm_mutex);
