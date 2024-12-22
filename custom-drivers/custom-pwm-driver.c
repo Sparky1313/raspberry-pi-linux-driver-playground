@@ -66,7 +66,6 @@
 
 /***************    Type definitions    ***************/
 
-
 typedef uint32_t pwm_ctl_field_t;
 
 // Datasheet calls the channels 0 and 1 but puts 1 and 2 as the register names.
