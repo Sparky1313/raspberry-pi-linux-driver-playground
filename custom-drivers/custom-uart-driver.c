@@ -2,6 +2,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/math64.h>
 #include <asm/io.h>
 
 #include "custom-driver-shared-info.h"
@@ -13,6 +14,10 @@
 // Peripheral addresses
 #define UART_BASE                 (BCM2837_PERI_BASE + 0x201000)
 #define UART_SIZE                 (0x90)               // Uart peripheral memory area in bytes
+
+#define UART_CLK_RATE             (19200000)  // It is 19.2 MHz by default
+#define UART_OVERSAMPLE_RATE      (16)        // Uart oversamples by 16
+#define UART_MAX_BAUD_RATE             (UART_CLK_RATE / UART_OVERSAMPLE_RATE)
 
 
 // UART DR Fields
@@ -197,54 +202,135 @@ typedef struct uart_s
 // Static functions
 static int __init uart_driver_init(void);
 static void __exit uart_driver_exit(void);
+static int uart_set_baud_rate(uint32_t baud_rate);
 
 
 /***************    Private variables    ***************/
 
-
-
+uart_t *uart = NULL;
+static DEFINE_MUTEX(uart_mutex);
 
 /***************    Function Definitions    ***************/
 
 static int __init uart_driver_init(void)
 {
   // Attempt to map the PWM peripheral
-  pwm_perph = (pwm_perph_t *)(ioremap(PWM_BASE, PWM_SIZE));  // Note, a page size always has to be allocated, so even if it is under a page, it still takes up a page of memory.
+  uart = (uart_t *)(ioremap(UART_BASE, UART_SIZE));  // Note, a page size always has to be allocated, so even if it is under a page, it still takes up a page of memory.
 
   // For some reason the mapping failed
-  if (NULL == pwm_perph)
+  if (NULL == uart)
   {
     // Exit immediately
-    pr_err("PWM driver couldn't map the io space!\n");
+    pr_err("UART driver couldn't map the io space!\n");
     return -EMAPPING;
   }
   else
   {
-    printk("PWM successfully mapped\n");
+    printk("UART successfully mapped\n");
   }
 
-  mutex_init(&pwm_mutex);
+  mutex_init(&uart_mutex);
 
-  printk("PWM driver successfully initialized\n");
+  printk("UART driver successfully initialized\n");
+
+  uart_set_baud_rate(9600);
+
   return ENONE;
 }
 
 static void __exit uart_driver_exit(void)
 {
   // If the gpio was successfully mapped
-  if (NULL != pwm_perph)
+  if (NULL != uart)
   {
-    // Reset the pwm channels to inital values before unmapping
-    pwm_reset_pwm_channels();
+    // // Reset the pwm channels to inital values before unmapping
+    // pwm_reset_pwm_channels();
 
-    // Release the GPIO mapping
-    printk("Released PWM mapping\n");
-    iounmap(pwm_perph);
+    // Release the UART mapping
+    printk("Released UART mapping\n");
+    iounmap(uart);
   }
   
-  mutex_destroy(&pwm_mutex);
+  mutex_destroy(&uart_mutex);
 
-  printk("PWM driver exited\n");
+  printk("UART driver exited\n");
+}
+
+static int uart_set_baud_rate(uint32_t baud_rate)
+{
+  if (unlikely(UART_MAX_BAUD_RATE < baud_rate))
+  {
+    pr_err("Requested uart baud rate of %u is greater than the uart maximum baud rate of %u!", baud_rate, UART_MAX_BAUD_RATE);
+    return -EINVFUNC;
+  }
+  else if (unlikely(0 == baud_rate))
+  {
+    pr_err("Requested uart baud rate cannot be 0!");
+    return -EINVFUNC;
+  }
+
+  
+
+  uint32_t baud_rate_divsor_integer = 1;
+  uint32_t baud_rate_divsor_fractional = 0;   // The fractional part is out of 64. So baud_rate_divsor_fractional / 64.
+
+  // We can't use floats in the kernel, so to do our calculations we will use uint64_t.
+  // Since the highest the clock is by default is 19.2 MHz we can multiply everything up by 100000 to get 6 decimal places of precision.
+  // This is plenty considering that the fractional part is out of 64 (so precision of 1/64 = 0.015625). 
+  // Therefore, by default of the baud rate fractional divisor, the maximum we will ever be off for our baud rate is up to 1.56% 
+  // (when the integer part is 1 and if the next fractional part was just under the threshold for the next numerator value and we truncated it 
+  // (i.e. we did 1/64 instead of 2/64 for decimal of 0.031245))
+  // We try to round so hopefully that error should be reduced to a maximum of 0.78%.
+  // Of course this all assuming a perfect clock, but even so, a reasonable estimate I have seen for tolerance
+  // of baud rate between 2 uarts is 5% total, so hopefully we have enough wiggle room.
+  // Of course this error rate should be very small if we use standard baud rates with the default uart clock rate of 19.2 MHz.
+  
+  // I will use the example of passing in a baud rate of 115200
+
+  uint32_t const PRECISION_BOOST = 1000000;
+  uint32_t const ROUNDING_HELPER = PRECISION_BOOST / 2;
+  uint32_t decimal_portion = 0;
+
+  uint64_t precision_calculation_val = div_u64(mul_u32_u32(UART_CLK_RATE, PRECISION_BOOST), (UART_OVERSAMPLE_RATE * baud_rate));  // E.g. ((19,200,000 * 1,000,000) / (16 * 115,200)) 
+                                                                                                                                  //      = 10,416,666 
+                                                                                                                          
+  baud_rate_divsor_integer = div_u64_rem(precision_calculation_val, PRECISION_BOOST, &decimal_portion);   // 10,416,666 / 1,000,000 = 10
+                                                                                                          // 10,416,666 % 1,000,000 = 416,666
+
+  baud_rate_divsor_fractional = (((decimal_portion * 64) + ROUNDING_HELPER) / PRECISION_BOOST);   //    ((416,666 * 64) + 500,000) / 1,000,000)
+                                                                                                  // =  (26,666,624 + 500,000) / 1,000,000)  (we add the 500,000 to account for rounding when dividing by 1,000,000)
+                                                                                                  // =  (27,166,624 / 1,000,000)
+                                                                                                  // =  (27)
+                                                                                                  // Therefore our fractional component will be 27 (i.e. 27/64)
+
+  // In the baud rate example of 115200 this would give us a baud rate of (19,200,000 / (16 * (10 + (27 / 64 )))).
+  // This is a calculated baud rate of 115142.429.
+  // This gives us an error of ((115142 - 115200) / 115200)
+  // i.e. -5.03472e^-4 error
+  // i.e. -0.05% error
+
+  // If the fractional is 64 (or greater but greater should never happen) because
+  // we rounded up, then set the fractional part to zero and increase the integer part
+  // by 1.
+  if (64 <= baud_rate_divsor_fractional)
+  {
+    baud_rate_divsor_integer++;
+    baud_rate_divsor_fractional = 0;
+  }
+
+
+  // Assign the proper registers with correct values
+
+  mutex_lock(&uart_mutex);
+
+  uart->ibrd = (baud_rate_divsor_integer & IBRD_FIELD);
+  uart->fbrd = (baud_rate_divsor_fractional & FBRD_FIELD);
+
+  mutex_unlock(&uart_mutex);
+ 
+  printk("UART baud rate set to %u\n", baud_rate);
+                                                                      
+  return ENONE;
 }
 
 module_init(uart_driver_init);

@@ -140,7 +140,7 @@ static void __exit pwm_driver_exit(void)
     // Reset the pwm channels to inital values before unmapping
     pwm_reset_pwm_channels();
 
-    // Release the GPIO mapping
+    // Release the PWM mapping
     printk("Released PWM mapping\n");
     iounmap(pwm_perph);
   }
