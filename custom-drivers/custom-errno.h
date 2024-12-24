@@ -11,5 +11,6 @@
 #define EUNSUPCMD     1004      /* Unsupported command */
 #define ECBFULL       1005      /* Callbacks full */
 #define EINVFUNC      1006      /* Invalid functionality requested */
+#define EINVCONFIG    1007      /* Invalid configuration provided */
 
 #endif

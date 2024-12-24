@@ -7,6 +7,7 @@
 
 #include "custom-driver-shared-info.h"
 #include "custom-errno.h"
+#include "custom-uart-driver.h"
 
 
 /***************    Macros    ***************/
@@ -17,7 +18,7 @@
 
 #define UART_CLK_RATE             (19200000)  // It is 19.2 MHz by default
 #define UART_OVERSAMPLE_RATE      (16)        // Uart oversamples by 16
-#define UART_MAX_BAUD_RATE             (UART_CLK_RATE / UART_OVERSAMPLE_RATE)
+#define UART_MAX_BAUD_RATE        (UART_CLK_RATE / UART_OVERSAMPLE_RATE)
 
 
 // UART DR Fields
@@ -203,6 +204,9 @@ typedef struct uart_s
 static int __init uart_driver_init(void);
 static void __exit uart_driver_exit(void);
 static int uart_set_baud_rate(uint32_t baud_rate);
+static int uart_set_data_bit_size(uart_data_bit_size_t data_bit_size);
+static int uart_set_parity(uart_parity_t parity);
+static int uart_set_stop_bits(uart_stop_bits_t stop_bits);
 
 
 /***************    Private variables    ***************/
@@ -233,8 +237,9 @@ static int __init uart_driver_init(void)
 
   printk("UART driver successfully initialized\n");
 
-  uart_set_baud_rate(9600);
-
+  // TODO: Remove this, just using this setting for testing
+  uart_init(9600, UART_DATA_8_BITS, UART_NO_PARITY, UART_STOP_BITS_1);
+  
   return ENONE;
 }
 
@@ -256,20 +261,52 @@ static void __exit uart_driver_exit(void)
   printk("UART driver exited\n");
 }
 
+int uart_init(uint32_t baud_rate, uart_data_bit_size_t data_bit_size, uart_parity_t parity, uart_stop_bits_t stop_bits)
+{
+  int error = ENONE;
+
+  // Reset the LCRH register to initial values
+  mutex_lock(&uart_mutex);
+
+  uart->lcrh = 0;
+
+  mutex_unlock(&uart_mutex);
+
+  error = uart_set_baud_rate(baud_rate);
+  if (ENONE != error)
+  {
+    return error;
+  }
+
+  error = uart_set_data_bit_size(data_bit_size);
+  if (ENONE != error)
+  {
+    return error;
+  }
+
+  error = uart_set_parity(parity);
+  if (ENONE != error)
+  {
+    return error;
+  }
+
+  error = uart_set_stop_bits(stop_bits);
+
+  return error;
+}
+
 static int uart_set_baud_rate(uint32_t baud_rate)
 {
   if (unlikely(UART_MAX_BAUD_RATE < baud_rate))
   {
-    pr_err("Requested uart baud rate of %u is greater than the uart maximum baud rate of %u!", baud_rate, UART_MAX_BAUD_RATE);
-    return -EINVFUNC;
+    pr_err("Requested uart baud rate of %u is greater than the uart maximum baud rate of %u!\n", baud_rate, UART_MAX_BAUD_RATE);
+    return -EINVCONFIG;
   }
   else if (unlikely(0 == baud_rate))
   {
-    pr_err("Requested uart baud rate cannot be 0!");
-    return -EINVFUNC;
+    pr_err("Requested uart baud rate cannot be 0!\n");
+    return -EINVCONFIG;
   }
-
-  
 
   uint32_t baud_rate_divsor_integer = 1;
   uint32_t baud_rate_divsor_fractional = 0;   // The fractional part is out of 64. So baud_rate_divsor_fractional / 64.
@@ -333,8 +370,106 @@ static int uart_set_baud_rate(uint32_t baud_rate)
   return ENONE;
 }
 
+static int uart_set_data_bit_size(uart_data_bit_size_t data_bit_size)
+{
+  int error = ENONE;
+
+  uint32_t wlen_val = 0;
+
+  switch (data_bit_size)
+  {
+    case UART_DATA_5_BITS:
+      wlen_val = LCRH_WLEN_5_BIT;
+      break;
+    case UART_DATA_6_BITS:
+      wlen_val = LCRH_WLEN_6_BIT;
+      break;
+    case UART_DATA_7_BITS:
+      wlen_val = LCRH_WLEN_7_BIT;
+      break;
+    case UART_DATA_8_BITS:
+      wlen_val = LCRH_WLEN_8_BIT;
+      break;
+    default:
+      error = -EINVCONFIG;
+      break;
+  }
+
+  if (ENONE != error)
+  {
+    pr_err("UART data bits size %d not valid!\n", data_bit_size);
+    return error;
+  }
+
+  // Lock the register while we read it and then write to it.
+  mutex_lock(&uart_mutex);
+  
+  uart->lcrh = ((uart->lcrh & ~(LCRH_WLEN_FIELD)) | wlen_val);
+
+  mutex_unlock(&uart_mutex);
+
+  return error;
+}
+
+static int uart_set_parity(uart_parity_t parity)
+{
+  int error = ENONE;
+
+  // Lock the register while we read it and then write to it.
+  mutex_lock(&uart_mutex);
+
+  switch (parity)
+  {
+    case UART_EVEN_PARITY:
+      uart->lcrh |= (LCRH_EPS_FIELD | LCRH_PEN_FIELD);
+      break;
+    case UART_ODD_PARITY:
+      uart->lcrh = ((uart->lcrh & ~(LCRH_EPS_FIELD)) | LCRH_PEN_FIELD);
+      break;
+    case UART_NO_PARITY:
+      uart->lcrh &= ~(LCRH_PEN_FIELD);
+      break;
+    default:
+      pr_err("UART parity %d not valid!\n", parity);
+      error = -EINVCONFIG;
+      break;
+  }
+
+  mutex_unlock(&uart_mutex);
+
+  return error;
+}
+
+static int uart_set_stop_bits(uart_stop_bits_t stop_bits)
+{
+  int error = ENONE;
+
+  // Lock the register while we read it and then write to it.
+  mutex_lock(&uart_mutex);
+
+  switch (stop_bits)
+  {
+    case UART_STOP_BITS_1:
+      uart->lcrh &= ~(LCRH_STP2_FIELD);
+      break;
+    case UART_STOP_BITS_2:
+      uart->lcrh |= LCRH_STP2_FIELD;
+      break;
+    default:
+      pr_err("UART stop bits %d not valid!\n", stop_bits);
+      error = -EINVCONFIG;
+      break;
+  }
+
+  mutex_unlock(&uart_mutex);
+
+  return error;
+}
+
 module_init(uart_driver_init);
 module_exit(uart_driver_exit);
+
+EXPORT_SYMBOL(uart_init);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Trevor Foland");

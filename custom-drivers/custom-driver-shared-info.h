@@ -1,6 +1,9 @@
 #ifndef CUSTOM_DRIVER_SHARED_INFO_H
 #define CUSTOM_DRIVER_SHARED_INFO_H
 
+// TODO: Move some of the headers common to all of the drivers
+//       into here.
+
 #define BCM2837_PERI_BASE     (0x3F000000)
 
 typedef enum pwm_channel_e
