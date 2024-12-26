@@ -7,7 +7,11 @@
 
 #include "custom-driver-shared-info.h"
 #include "custom-errno.h"
+#include "custom-gpio-driver.h"
 #include "custom-uart-driver.h"
+
+// TODO: Look at possibly getting rid of some of the mutex usage and replacing it with simple locks or atomic accesses (especially in cases)
+//       where basically I am just modifying a register.
 
 
 /***************    Macros    ***************/
@@ -16,7 +20,7 @@
 #define UART_BASE                 (BCM2837_PERI_BASE + 0x201000)
 #define UART_SIZE                 (0x90)               // Uart peripheral memory area in bytes
 
-#define UART_CLK_RATE             (19200000)  // It is 19.2 MHz by default
+#define UART_CLK_RATE             (48000000)  // It is 48 MHz by default
 #define UART_OVERSAMPLE_RATE      (16)        // Uart oversamples by 16
 #define UART_MAX_BAUD_RATE        (UART_CLK_RATE / UART_OVERSAMPLE_RATE)
 
@@ -198,7 +202,7 @@ typedef struct uart_s
 /***************    Function declarations    ***************/
 
 // Inline functions
-
+static inline void uart_write_byte(uint8_t data_byte);
 
 // Static functions
 static int __init uart_driver_init(void);
@@ -207,6 +211,8 @@ static int uart_set_baud_rate(uint32_t baud_rate);
 static int uart_set_data_bit_size(uart_data_bit_size_t data_bit_size);
 static int uart_set_parity(uart_parity_t parity);
 static int uart_set_stop_bits(uart_stop_bits_t stop_bits);
+static void uart_enable_fifos(bool do_enable);
+static void uart_enable(bool do_enable);
 
 
 /***************    Private variables    ***************/
@@ -239,6 +245,11 @@ static int __init uart_driver_init(void)
 
   // TODO: Remove this, just using this setting for testing
   uart_init(9600, UART_DATA_8_BITS, UART_NO_PARITY, UART_STOP_BITS_1);
+  gpio_set_pin_to_uart(14);
+  gpio_set_pin_to_uart(15);
+  uart_enable(true);
+  uart_write_byte(9U);
+  uart_write_byte(126U);
   
   return ENONE;
 }
@@ -249,7 +260,8 @@ static void __exit uart_driver_exit(void)
   if (NULL != uart)
   {
     // // Reset the pwm channels to inital values before unmapping
-    // pwm_reset_pwm_channels();
+    uart_enable(false);
+    uart_enable_fifos(false);
 
     // Release the UART mapping
     printk("Released UART mapping\n");
@@ -291,8 +303,14 @@ int uart_init(uint32_t baud_rate, uart_data_bit_size_t data_bit_size, uart_parit
   }
 
   error = uart_set_stop_bits(stop_bits);
+  if (ENONE != error)
+  {
+    return error;
+  }
 
-  return error;
+  uart_enable_fifos(true);
+
+  return ENONE;
 }
 
 static int uart_set_baud_rate(uint32_t baud_rate)
@@ -328,23 +346,23 @@ static int uart_set_baud_rate(uint32_t baud_rate)
   uint32_t const ROUNDING_HELPER = PRECISION_BOOST / 2;
   uint32_t decimal_portion = 0;
 
-  uint64_t precision_calculation_val = div_u64(mul_u32_u32(UART_CLK_RATE, PRECISION_BOOST), (UART_OVERSAMPLE_RATE * baud_rate));  // E.g. ((19,200,000 * 1,000,000) / (16 * 115,200)) 
-                                                                                                                                  //      = 10,416,666 
+  uint64_t precision_calculation_val = div_u64(mul_u32_u32(UART_CLK_RATE, PRECISION_BOOST), (UART_OVERSAMPLE_RATE * baud_rate));  // E.g. ((48,000,000 * 1,000,000) / (16 * 115,200)) 
+                                                                                                                                  //      = 26,041,666 
                                                                                                                           
-  baud_rate_divsor_integer = div_u64_rem(precision_calculation_val, PRECISION_BOOST, &decimal_portion);   // 10,416,666 / 1,000,000 = 10
-                                                                                                          // 10,416,666 % 1,000,000 = 416,666
+  baud_rate_divsor_integer = div_u64_rem(precision_calculation_val, PRECISION_BOOST, &decimal_portion);   // 26,041,666 / 1,000,000 = 26
+                                                                                                          // 26,041,666 % 1,000,000 = 41,666
 
-  baud_rate_divsor_fractional = (((decimal_portion * 64) + ROUNDING_HELPER) / PRECISION_BOOST);   //    ((416,666 * 64) + 500,000) / 1,000,000)
-                                                                                                  // =  (26,666,624 + 500,000) / 1,000,000)  (we add the 500,000 to account for rounding when dividing by 1,000,000)
-                                                                                                  // =  (27,166,624 / 1,000,000)
-                                                                                                  // =  (27)
-                                                                                                  // Therefore our fractional component will be 27 (i.e. 27/64)
+  baud_rate_divsor_fractional = (((decimal_portion * 64) + ROUNDING_HELPER) / PRECISION_BOOST);   //    ((41,666 * 64) + 500,000) / 1,000,000)
+                                                                                                  // =  (2,666,624 + 500,000) / 1,000,000)  (we add the 500,000 to account for rounding when dividing by 1,000,000)
+                                                                                                  // =  (3,166,624 / 1,000,000)
+                                                                                                  // =  (3)
+                                                                                                  // Therefore our fractional component will be 3 (i.e. 3/64)
 
-  // In the baud rate example of 115200 this would give us a baud rate of (19,200,000 / (16 * (10 + (27 / 64 )))).
-  // This is a calculated baud rate of 115142.429.
-  // This gives us an error of ((115142 - 115200) / 115200)
-  // i.e. -5.03472e^-4 error
-  // i.e. -0.05% error
+  // In the baud rate example of 115200 this would give us a baud rate of (48,000,000 / (16 * (26 + (3 / 64 )))).
+  // This is a calculated baud rate of 115176.965.
+  // This gives us an error of ((115176 - 115200) / 115200)
+  // i.e. -2.08333e^-4 error
+  // i.e. -0.02% error
 
   // If the fractional is 64 (or greater but greater should never happen) because
   // we rounded up, then set the fractional part to zero and increase the integer part
@@ -464,6 +482,49 @@ static int uart_set_stop_bits(uart_stop_bits_t stop_bits)
   mutex_unlock(&uart_mutex);
 
   return error;
+}
+
+static void uart_enable_fifos(bool do_enable)
+{
+
+  // Lock the register while we read it and then write to it.
+  mutex_lock(&uart_mutex);
+  
+  if (do_enable)
+  {
+    uart->lcrh |= LCRH_FEN_FIELD;
+  }
+  else
+  {
+    uart->lcrh &= ~(LCRH_FEN_FIELD);
+  }
+
+  mutex_unlock(&uart_mutex);
+}
+
+static void uart_enable(bool do_enable)
+{
+
+  // Lock the register while we read it and then write to it.
+  mutex_lock(&uart_mutex);
+  
+  if (do_enable)
+  {
+    uart->cr |= CR_UARTEN_FIELD;
+  }
+  else
+  {
+    uart->cr &= ~(CR_UARTEN_FIELD);
+  }
+
+  mutex_unlock(&uart_mutex);
+}
+
+static inline void uart_write_byte(uint8_t data_byte)
+{
+
+  // atomic_set(data_byte, &(uart->dr));
+  uart->dr = data_byte;
 }
 
 module_init(uart_driver_init);

@@ -8,6 +8,9 @@
 #include "custom-pwm-driver.h"
 #include "custom-errno.h"
 
+// TODO: Look at possibly getting rid of some of the mutex usage and replacing it with simple locks or atomic accesses (especially in cases)
+//       where basically I am just modifying a register.
+
 
 // NOTE: The PWM doesn't have the best documentation. Therefore, I had to do a lot of searching of forums to find decent documentation. Even then
 //       the documentation isn't great, but you can slowly piece it together.

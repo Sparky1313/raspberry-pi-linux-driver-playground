@@ -62,12 +62,13 @@ typedef uint32_t gpio_func_type_t;
 // Inline functions
 static inline bool gpio_is_valid_pin(uint32_t pin_num);
 static inline bool gpio_is_valid_pin_func(gpio_func_type_t gpio_func_type);
+static inline gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num);
+static inline gpio_func_type_t gpio_determine_uart_alt_func(uint32_t pin_num);
 
 // Static functions
 static int __init gpio_driver_init(void);
 static void __exit gpio_driver_exit(void);
 static void gpio_set_pin_to_input(uint32_t pin_num, bool is_active_high);
-static gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num);
 
 /***************    Private variables    ***************/
 
@@ -280,7 +281,7 @@ pwm_channel_t gpio_is_pin_pwm(uint32_t pin_num)
   return pwm_channel;
 }
 
-static gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num)
+static inline gpio_func_type_t gpio_determine_pwm_alt_func(uint32_t pin_num)
 {
   gpio_func_type_t gpio_func_type = GPIO_INVALID_FUNC;
 
@@ -323,14 +324,44 @@ int gpio_set_pin_to_pwm(uint32_t pin_num)
     return -EINVFUNC;
   }
 
-  int error = gpio_set_pin_function(pin_num, func_type);
+  return gpio_set_pin_function(pin_num, func_type);
+}
 
-  if (ENONE != error)
+static inline gpio_func_type_t gpio_determine_uart_alt_func(uint32_t pin_num)
+{
+  gpio_func_type_t gpio_func_type = GPIO_INVALID_FUNC;
+
+  switch (pin_num)
   {
-    return error;
+    case 14:
+    case 15:
+      gpio_func_type = GPIO_ALT_FUNC_0;
+      break;
+
+    default:
+      gpio_func_type = GPIO_INVALID_FUNC;
+      break;
   }
 
-  return ENONE;
+  return gpio_func_type;
+}
+
+// Ret values:  ENONE       - success              
+//              -EINVPIN    - failure, invalid pin_num argument
+//              -EINVREG    - failure, invalid register access
+//              -EINVFUNC   - failure, invalid gpio_func_type
+//              -EINTERNAL  - failure, other internal failure
+int gpio_set_pin_to_uart(uint32_t pin_num)
+{
+  gpio_func_type_t func_type = gpio_determine_uart_alt_func(pin_num);
+
+  if (GPIO_INVALID_FUNC == func_type)
+  {
+    pr_err("Pin number %u doesn't support UART!", pin_num);
+    return -EINVPIN;
+  }
+
+  return gpio_set_pin_function(pin_num, func_type);
 }
 
 module_init(gpio_driver_init);
@@ -340,6 +371,7 @@ EXPORT_SYMBOL(gpio_output_ctl);
 EXPORT_SYMBOL(gpio_set_pin_to_output);
 EXPORT_SYMBOL(gpio_is_pin_pwm);
 EXPORT_SYMBOL(gpio_set_pin_to_pwm);
+EXPORT_SYMBOL(gpio_set_pin_to_uart);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Trevor Foland");
