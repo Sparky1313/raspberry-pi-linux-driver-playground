@@ -3,7 +3,13 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/math64.h>
+#include <linux/semaphore.h>
+#include <linux/interrupt.h>
 #include <asm/io.h>
+
+#include <linux/delay.h> // TODO: Remove
+#include <linux/fs.h>
+#include <linux/cdev.h>
 
 #include "custom-driver-shared-info.h"
 #include "custom-errno.h"
@@ -24,6 +30,9 @@
 #define UART_OVERSAMPLE_RATE      (16)        // Uart oversamples by 16
 #define UART_MAX_BAUD_RATE        (UART_CLK_RATE / UART_OVERSAMPLE_RATE)
 
+#define UART_IRQ_CHANNEL          (114)  // By entering the command "cat /proc/interrupts" and looking at the 
+                                        // fourth column of the results, we can find the number that is the interrupt channel
+                                        // that has been assigned in the OS for the uart peripheral
 
 // UART DR Fields
 #define DR_DATA_FIELD             (0xFFU)
@@ -213,18 +222,97 @@ static int uart_set_parity(uart_parity_t parity);
 static int uart_set_stop_bits(uart_stop_bits_t stop_bits);
 static void uart_enable_fifos(bool do_enable);
 static void uart_enable(bool do_enable);
+static irqreturn_t uart_interrupt_handler(int irq_num, void *dev_id);
+static int uart_dev_uevent(struct device *dev, struct kobj_uevent_env *env);
+static inline void unregister_uart_cdev_region(void);
 
 
 /***************    Private variables    ***************/
 
 uart_t *uart = NULL;
 static DEFINE_MUTEX(uart_mutex);
+// On a normal Linux system I would use DEFINE_SEMAPHORE(name, n)
+// but unfortunately the support to give an initial value in the macro wasn't added unti
+// 2023. So we have to do it the long way.
+static struct semaphore uart_write_data_sem;
+static struct semaphore uart_read_data_sem;
+static bool is_irq_installed = false;
+
+struct cdev c_dev;
+struct device * p_device;
+static int major_drv_num = 0;
+static int first_minor_drv_num = 0;
+static struct class *p_uart_class = NULL; 
+
+static struct file_operations const uart_fops =
+{
+  // .read = led_read,
+  // .write = led_write,
+  // .open = led_open,
+  // .release = led_release
+};
 
 /***************    Function Definitions    ***************/
 
 static int __init uart_driver_init(void)
 {
-  // Attempt to map the PWM peripheral
+  dev_t dev_id = 0;
+  int error = ENONE;
+
+  error = alloc_chrdev_region(&dev_id, 0, 1, "CUSTOM_UART");
+  
+  if (ENONE != error)
+  {
+    pr_err("UART driver couldn't allocate device ids for all the necessary devices.\n");
+    goto failure_end;
+  }
+
+  major_drv_num = MAJOR(dev_id);
+  first_minor_drv_num = MINOR(dev_id);
+
+  // Create the device class before the cdev so that led_dev_init can create
+  // the actual device for each led when it is called.
+  p_uart_class = class_create(THIS_MODULE, "custom_uart_class");
+
+  if (IS_ERR(p_uart_class))
+  {
+    error = PTR_ERR(p_uart_class);
+    pr_err("Failed to create class for UART! error: %d\n", error);
+    goto unregister_uart_cdev_region;
+  }
+
+  // Now assign the custom dev_uevent function that will run when a new device
+  // is created. We use this to set device permissions at creation.
+  p_uart_class->dev_uevent = uart_dev_uevent;
+
+  cdev_init(&(c_dev), &uart_fops);
+  c_dev.owner = THIS_MODULE;
+  
+  // Try to add the character device
+  error = cdev_add(&(c_dev), dev_id, 1);
+
+  if (ENONE != error)
+  {
+    goto delete_uart_class;
+  }
+
+  // Try to create the actual led device
+  p_device = device_create(p_uart_class, NULL, c_dev.dev, NULL, "uart_device_name");
+
+  if (IS_ERR(p_device))
+  {
+    error = PTR_ERR(p_device);
+    pr_err("Creating actual UART device failed! error: %d\n", error);
+
+    // Delete this device's cdev that was added
+    cdev_del(&(c_dev));
+    
+    goto delete_uart_class;
+  }
+
+
+
+  // Attempt to map the UART peripheral
   uart = (uart_t *)(ioremap(UART_BASE, UART_SIZE));  // Note, a page size always has to be allocated, so even if it is under a page, it still takes up a page of memory.
 
   // For some reason the mapping failed
@@ -232,7 +320,9 @@ static int __init uart_driver_init(void)
   {
     // Exit immediately
     pr_err("UART driver couldn't map the io space!\n");
-    return -EMAPPING;
+    // return -EMAPPING;
+    error = -EMAPPING;
+    goto delete_uart_cdevs_and_devices;
   }
   else
   {
@@ -240,18 +330,112 @@ static int __init uart_driver_init(void)
   }
 
   mutex_init(&uart_mutex);
+  sema_init(&uart_write_data_sem, 2);
+  sema_init(&uart_read_data_sem, 2);
 
   printk("UART driver successfully initialized\n");
+
+  if (ENONE == request_irq(UART_IRQ_CHANNEL, uart_interrupt_handler, IRQF_SHARED, "custom_uart", p_device))
+  {
+    is_irq_installed = true;
+  }
+  else
+  {
+    pr_err("Requesting irq failed");
+    // free_irq (UART_IRQ_CHANNEL, NULL);
+    // //
+    // if (ENONE == request_irq(UART_IRQ_CHANNEL, uart_interrupt_handler, IRQF_SHARED, "custom_uart", p_device))
+    // {
+    //   is_irq_installed = true;
+    // }
+    // //
+    // pr_err("Requesting irq failed AGAIN");
+  }
 
   // TODO: Remove this, just using this setting for testing
   uart_init(9600, UART_DATA_8_BITS, UART_NO_PARITY, UART_STOP_BITS_1);
   gpio_set_pin_to_uart(14);
   gpio_set_pin_to_uart(15);
+  uart->icr |= ICR_TXIC_FIELD | ICR_RXIC_FIELD;
+
+  uart->imsc |= IMSC_TXIM_FIELD;
   uart_enable(true);
-  uart_write_byte(9U);
-  uart_write_byte(126U);
+
+  printk("Masked register value is %u. Mask setting is %u. Raw values are %u\n", uart->mis, uart->imsc, uart->ris);
+
+  uint32_t j = 0;
+
+  // for (int i = 0; i < 100; i++)
+  // {
+    
+  //   while (0 != (uart->fr & FR_TXFF_FIELD))
+  //   {
+  //     j++;
+      
+  //     if (0 != (uart->fr & FR_TXFE_FIELD))
+  //     {
+  //       printk("Fifo finally empty after %d times\n", j);
+  //       break;
+  //     }
+  //   }
+
+  //   uart_write_byte('C');
+
+  //   // msleep(1);
+  // }
+  // while (0 != (uart->fr & FR_TXFF_FIELD))
+  // {
+  //   j++;
+  // }
+  // uart_write_byte('\0');
+
+  msleep(1000);
+
+  uart_write_byte('A');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  uart_write_byte('T');
+  // uart_write_byte('+');
+  // uart_write_byte('I');
+  // uart_write_byte('M');
+  // uart_write_byte('M');
+  // uart_write_byte('E');
+  // uart_write_byte('?');
+  // uart_write_byte('\0');
   
   return ENONE;
+
+
+delete_uart_cdevs_and_devices:
+
+  // We should never have a null pointer for p_device
+  // if the device was successfully inited, but we
+  // will double-check just to be sure.
+  if (NULL != p_device)
+  {
+    device_destroy(p_uart_class, c_dev.dev);
+  }
+
+  cdev_del(&(c_dev));
+
+delete_uart_class:
+  class_destroy(p_uart_class);
+
+unregister_uart_cdev_region:
+  unregister_uart_cdev_region();
+
+failure_end:
+  pr_err("UART failed initialization!\n");
+
+  return error;
 }
 
 static void __exit uart_driver_exit(void)
@@ -259,6 +443,10 @@ static void __exit uart_driver_exit(void)
   // If the gpio was successfully mapped
   if (NULL != uart)
   {
+    if (is_irq_installed)
+    {
+      free_irq (UART_IRQ_CHANNEL, p_device);
+    }
     // // Reset the pwm channels to inital values before unmapping
     uart_enable(false);
     uart_enable_fifos(false);
@@ -266,9 +454,18 @@ static void __exit uart_driver_exit(void)
     // Release the UART mapping
     printk("Released UART mapping\n");
     iounmap(uart);
+        
+    printk("Destroyed device with device id: %d\n", c_dev.dev);
+    device_destroy(p_uart_class, c_dev.dev);
+    cdev_del(&(c_dev));
+    class_destroy(p_uart_class);
+    unregister_uart_cdev_region();
   }
   
+  // TODO: Need to add checks on these destroy calls
   mutex_destroy(&uart_mutex);
+  // It looks like semaphores are destroyed once they go out of scope
+  // so no destroy function exists in the kernel
 
   printk("UART driver exited\n");
 }
@@ -525,6 +722,25 @@ static inline void uart_write_byte(uint8_t data_byte)
 
   // atomic_set(data_byte, &(uart->dr));
   uart->dr = data_byte;
+}
+
+static irqreturn_t uart_interrupt_handler(int irq_num, void *dev_id)
+{
+  printk("Hey, we saw a uart interrupt. Masked register value is %u\n", uart->mis);
+  uart->icr |= ICR_TXIC_FIELD | ICR_RXIC_FIELD;
+  return IRQ_HANDLED;
+}
+
+static int uart_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+  // Look at linux/drivers/base/core.c for an example of add_uevent_var
+  add_uevent_var(env, "DEVMODE=%#o", 0666);
+  return ENONE;
+}
+
+static inline void unregister_uart_cdev_region(void)
+{
+  unregister_chrdev_region(MKDEV(major_drv_num, first_minor_drv_num), 1);
 }
 
 module_init(uart_driver_init);

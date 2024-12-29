@@ -333,7 +333,7 @@ static int led_dev_init(led_dev_t *led_dev, uint32_t led_dev_index)
   // Try to create the actual led device
   led_dev->p_device = device_create(p_led_class, NULL, led_dev->c_dev.dev, NULL, led_device_name);
 
-  if (IS_ERR(led_dev))
+  if (IS_ERR(led_dev->p_device))
   {
     error = PTR_ERR(led_dev->p_device);
     pr_err("Creating actual LED device failed! error: %d\n", error);
